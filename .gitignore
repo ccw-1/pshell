@@ -1,0 +1,46 @@
+# Build artifacts
+bin/
+obj/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# Editor files
+*.swp
+*.swo
+*~
+.*.sw?
+.vscode/
+.idea/
+
+# Runtime files
+*.pid
+*.sock
+*.log
+
+# Test artifacts
+test_output/
+*.test
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+tmp/
+temp/
+*.tmp

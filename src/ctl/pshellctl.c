@@ -1,0 +1,648 @@
+/*
+ * pshellctl - Unix socket control utility for pshell daemon
+ * 
+ * Provides local control interface via Unix domain socket.
+ * No authentication required (uses file permissions).
+ */
+
+#include "pshell/socket_client.h"
+#include "pshell/json_simple.h"
+#include "pshell/logger.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+
+#define DEFAULT_SOCKET_PATH "/tmp/pshell.sock"
+
+/* Forward declarations */
+static void print_usage(const char *prog);
+static int cmd_create(socket_client_t *client, int argc, char **argv);
+static int cmd_list(socket_client_t *client, int argc, char **argv);
+static int cmd_info(socket_client_t *client, int argc, char **argv);
+static int cmd_send(socket_client_t *client, int argc, char **argv);
+static int cmd_output(socket_client_t *client, int argc, char **argv);
+static int cmd_screen(socket_client_t *client, int argc, char **argv);
+static int cmd_resize(socket_client_t *client, int argc, char **argv);
+static int cmd_expect(socket_client_t *client, int argc, char **argv);
+static int cmd_destroy(socket_client_t *client, int argc, char **argv);
+static int cmd_status(socket_client_t *client, int argc, char **argv);
+
+static void print_usage(const char *prog) {
+    printf("Usage: %s [options] <command> [args...]\n", prog);
+    printf("\n");
+    printf("Options:\n");
+    printf("  -s <path>    Socket path (default: %s)\n", DEFAULT_SOCKET_PATH);
+    printf("  -h           Show this help\n");
+    printf("\n");
+    printf("Commands:\n");
+    printf("  create [--command <cmd>] [--rows <n>] [--cols <n>]\n");
+    printf("      Create new session\n");
+    printf("\n");
+    printf("  list\n");
+    printf("      List all sessions\n");
+    printf("\n");
+    printf("  info <session-id>\n");
+    printf("      Get session information\n");
+    printf("\n");
+    printf("  send <session-id> <text>\n");
+    printf("      Send text to session\n");
+    printf("\n");
+    printf("  output <session-id>\n");
+    printf("      Read output from session\n");
+    printf("\n");
+    printf("  screen <session-id>\n");
+    printf("      Get screen state\n");
+    printf("\n");
+    printf("  resize <session-id> <rows> <cols>\n");
+    printf("      Resize terminal\n");
+    printf("\n");
+    printf("  expect <session-id> <pattern> [timeout_ms]\n");
+    printf("      Wait for pattern match\n");
+    printf("\n");
+    printf("  destroy <session-id>\n");
+    printf("      Destroy session\n");
+    printf("\n");
+    printf("  status\n");
+    printf("      Get daemon status\n");
+    printf("\n");
+}
+
+static int cmd_create(socket_client_t *client, int argc, char **argv) {
+    const char *command = "bash";
+    int rows = 24;
+    int cols = 80;
+    
+    /* Parse arguments */
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--command") == 0 && i + 1 < argc) {
+            command = argv[++i];
+        } else if (strcmp(argv[i], "--rows") == 0 && i + 1 < argc) {
+            rows = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--cols") == 0 && i + 1 < argc) {
+            cols = atoi(argv[++i]);
+        }
+    }
+    
+    /* Build request */
+    char request[1024];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d}}",
+             command, rows, cols);
+    
+    /* Send request */
+    char response[4096];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            const char *id = json_object_get_string(result, "id");
+            if (id) {
+                printf("%s\n", id);
+            }
+        }
+    } else {
+        json_value_t *error = json_object_get(root, "error");
+        if (error) {
+            const char *message = json_object_get_string(error, "message");
+            if (message) {
+                fprintf(stderr, "Error: %s\n", message);
+            }
+        }
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_list(socket_client_t *client, int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    
+    /* Build request */
+    const char *request = "{\"method\":\"list_sessions\"}";
+    
+    /* Send request */
+    char response[8192];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            json_value_t *sessions = json_object_get(result, "sessions");
+            int count = json_object_get_int(result, "count", 0);
+            
+            printf("Sessions (%d):\n", count);
+            
+            if (sessions && json_get_type(sessions) == JSON_ARRAY) {
+                size_t array_size = json_array_size(sessions);
+                for (size_t i = 0; i < array_size; i++) {
+                    json_value_t *session = json_array_get(sessions, i);
+                    const char *id = json_object_get_string(session, "id");
+                    const char *cmd = json_object_get_string(session, "command");
+                    int rows = json_object_get_int(session, "rows", 0);
+                    int cols = json_object_get_int(session, "cols", 0);
+                    int pid = json_object_get_int(session, "pid", 0);
+                    const char *state = json_object_get_string(session, "state");
+                    
+                    printf("  ID: %s\n", id ? id : "unknown");
+                    printf("  Command: %s\n", cmd ? cmd : "unknown");
+                    printf("  Size: %dx%d\n", rows, cols);
+                    printf("  PID: %d\n", pid);
+                    printf("  State: %s\n", state ? state : "unknown");
+                    if (i < array_size - 1) {
+                        printf("\n");
+                    }
+                }
+            }
+        }
+    } else {
+        fprintf(stderr, "Error listing sessions\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_info(socket_client_t *client, int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "Usage: info <session-id>\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    
+    /* Build request */
+    char request[512];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"get_session\",\"params\":{\"id\":\"%s\"}}",
+             session_id);
+    
+    /* Send request */
+    char response[4096];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse and display response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            const char *id = json_object_get_string(result, "id");
+            const char *cmd = json_object_get_string(result, "command");
+            int rows = json_object_get_int(result, "rows", 0);
+            int cols = json_object_get_int(result, "cols", 0);
+            int pid = json_object_get_int(result, "pid", 0);
+            const char *state = json_object_get_string(result, "state");
+            
+            printf("Session Information:\n");
+            printf("  ID: %s\n", id ? id : "unknown");
+            printf("  Command: %s\n", cmd ? cmd : "unknown");
+            printf("  Size: %dx%d\n", rows, cols);
+            printf("  PID: %d\n", pid);
+            printf("  State: %s\n", state ? state : "unknown");
+        }
+    } else {
+        fprintf(stderr, "Session not found\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_send(socket_client_t *client, int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: send <session-id> <text>\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    const char *text = argv[1];
+    
+    /* Build request */
+    char request[4096];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"send_text\",\"params\":{\"id\":\"%s\",\"text\":\"%s\"}}",
+             session_id, text);
+    
+    /* Send request */
+    char response[1024];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            int bytes = json_object_get_int(result, "bytes", 0);
+            printf("Sent %d bytes\n", bytes);
+        }
+    } else {
+        fprintf(stderr, "Failed to send text\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_output(socket_client_t *client, int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "Usage: output <session-id>\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    
+    /* Build request */
+    char request[512];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"get_output\",\"params\":{\"id\":\"%s\"}}",
+             session_id);
+    
+    /* Send request */
+    char response[8192];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            const char *output = json_object_get_string(result, "output");
+            if (output) {
+                printf("%s", output);
+            }
+        }
+    } else {
+        fprintf(stderr, "Failed to read output\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_screen(socket_client_t *client, int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "Usage: screen <session-id>\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    
+    /* Build request */
+    char request[512];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"get_screen\",\"params\":{\"id\":\"%s\"}}",
+             session_id);
+    
+    /* Send request */
+    char response[8192];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            const char *text = json_object_get_string(result, "text");
+            int cursor_row = json_object_get_int(result, "cursor_row", 0);
+            int cursor_col = json_object_get_int(result, "cursor_col", 0);
+            
+            if (text) {
+                printf("%s", text);
+            }
+            printf("\n[Cursor at row %d, col %d]\n", cursor_row, cursor_col);
+        }
+    } else {
+        fprintf(stderr, "Failed to get screen\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_resize(socket_client_t *client, int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: resize <session-id> <rows> <cols>\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    int rows = atoi(argv[1]);
+    int cols = atoi(argv[2]);
+    
+    /* Build request */
+    char request[512];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"resize_session\",\"params\":{\"id\":\"%s\",\"rows\":%d,\"cols\":%d}}",
+             session_id, rows, cols);
+    
+    /* Send request */
+    char response[1024];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        printf("Resized to %dx%d\n", rows, cols);
+    } else {
+        fprintf(stderr, "Failed to resize\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_expect(socket_client_t *client, int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: expect <session-id> <pattern> [timeout_ms]\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    const char *pattern = argv[1];
+    int timeout = argc > 2 ? atoi(argv[2]) : 5000;
+    
+    /* Build request */
+    char request[1024];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"expect_pattern\",\"params\":{\"id\":\"%s\",\"pattern\":\"%s\",\"timeout\":%d}}",
+             session_id, pattern, timeout);
+    
+    /* Send request */
+    char response[8192];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            bool matched = json_object_get_bool(result, "matched", false);
+            if (matched) {
+                const char *matched_text = json_object_get_string(result, "matched_text");
+                if (matched_text) {
+                    printf("Matched: \"%s\"\n", matched_text);
+                }
+            } else {
+                printf("No match (timeout)\n");
+            }
+        }
+    } else {
+        fprintf(stderr, "Expect failed\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_destroy(socket_client_t *client, int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "Usage: destroy <session-id>\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    
+    /* Build request */
+    char request[512];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"destroy_session\",\"params\":{\"id\":\"%s\"}}",
+             session_id);
+    
+    /* Send request */
+    char response[1024];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        printf("Session destroyed\n");
+    } else {
+        fprintf(stderr, "Failed to destroy session\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+static int cmd_status(socket_client_t *client, int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    
+    /* Build request */
+    const char *request = "{\"method\":\"daemon_status\"}";
+    
+    /* Send request */
+    char response[4096];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            const char *daemon_status = json_object_get_string(result, "status");
+            int sessions = json_object_get_int(result, "sessions", 0);
+            int uptime = json_object_get_int(result, "uptime", 0);
+            
+            printf("Status: %s\n", daemon_status ? daemon_status : "unknown");
+            printf("Sessions: %d\n", sessions);
+            if (uptime > 0) {
+                printf("Uptime: %ds\n", uptime);
+            }
+        }
+    } else {
+        fprintf(stderr, "Failed to get status\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    const char *socket_path = DEFAULT_SOCKET_PATH;
+    int opt;
+    
+    /* Parse options */
+    while ((opt = getopt(argc, argv, "s:h")) != -1) {
+        switch (opt) {
+            case 's':
+                socket_path = optarg;
+                break;
+            case 'h':
+                print_usage(argv[0]);
+                return 0;
+            default:
+                print_usage(argv[0]);
+                return 1;
+        }
+    }
+    
+    /* Check for command */
+    if (optind >= argc) {
+        fprintf(stderr, "Error: No command specified\n\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+    
+    const char *command = argv[optind];
+    int cmd_argc = argc - optind - 1;
+    char **cmd_argv = argv + optind + 1;
+    
+    /* Connect to socket */
+    socket_client_t client;
+    if (socket_client_connect(&client, socket_path) < 0) {
+        fprintf(stderr, "Failed to connect to pshell daemon at %s\n", socket_path);
+        fprintf(stderr, "Is the daemon running?\n");
+        return 1;
+    }
+    
+    /* Dispatch command */
+    int result = 1;
+    if (strcmp(command, "create") == 0) {
+        result = cmd_create(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "list") == 0) {
+        result = cmd_list(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "info") == 0) {
+        result = cmd_info(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "send") == 0) {
+        result = cmd_send(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "output") == 0) {
+        result = cmd_output(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "screen") == 0) {
+        result = cmd_screen(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "resize") == 0) {
+        result = cmd_resize(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "expect") == 0) {
+        result = cmd_expect(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "destroy") == 0) {
+        result = cmd_destroy(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "status") == 0) {
+        result = cmd_status(&client, cmd_argc, cmd_argv);
+    } else {
+        fprintf(stderr, "Unknown command: %s\n", command);
+        print_usage(argv[0]);
+        result = 1;
+    }
+    
+    /* Cleanup */
+    socket_client_disconnect(&client);
+    
+    return result;
+}
