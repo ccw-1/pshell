@@ -149,6 +149,9 @@ bool rest_api_set_key(rest_api_t *api, const char *api_key) {
     return true;
 }
 
+/* External function to get default shell */
+extern const char* get_default_shell(void);
+
 /* Handler: Create session */
 static void handle_create_session(http_request_t *req, http_response_t *resp, void *user_data) {
     rest_api_t *api = (rest_api_t*)user_data;
@@ -175,10 +178,10 @@ static void handle_create_session(http_request_t *req, http_response_t *resp, vo
     int rows = json_object_get_int(json, "rows", 24);
     int cols = json_object_get_int(json, "cols", 80);
     
+    /* Use default shell if command not specified */
     if (!command) {
-        json_free(json);
-        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Missing 'command' field");
-        return;
+        command = get_default_shell();
+        log_debug("Using default shell: %s", command);
     }
     
     /* Create session using session manager */

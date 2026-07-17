@@ -15,6 +15,9 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+/* External function to get default shell */
+extern const char* get_default_shell(void);
+
 /* Forward declarations */
 static void handle_create_session(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 static void handle_list_sessions(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
@@ -132,8 +135,10 @@ static void handle_create_session(socket_connection_t *conn, json_value_t *param
     int rows = json_object_get_int(params, "rows", 24);
     int cols = json_object_get_int(params, "cols", 80);
     
+    /* Use default shell if command not specified */
     if (!command) {
-        command = "bash";
+        command = get_default_shell();
+        log_debug("Using default shell: %s", command);
     }
     
     /* Create session */

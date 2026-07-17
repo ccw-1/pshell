@@ -29,6 +29,12 @@ static http_server_t *g_http_server = NULL;
 static rest_api_t *g_rest_api = NULL;
 static socket_server_t *g_socket_server = NULL;
 static session_manager_t *g_session_mgr = NULL;
+static char g_default_shell[256] = "/bin/sh";
+
+/* Get default shell from configuration (non-static for external use) */
+const char* get_default_shell(void) {
+    return g_default_shell;
+}
 
 /* HTTP server event callback */
 static void http_server_callback(int fd, io_event_type_t events, void *user_data) {
@@ -48,6 +54,9 @@ static void socket_server_callback(int fd, io_event_type_t events, void *user_da
 
 /* Socket protocol handler (implemented in socket_protocol.c) */
 extern void socket_protocol_handler(socket_connection_t *conn, const char *message, void *user_data);
+
+/* Export default shell getter for REST API and socket protocol */
+extern const char* get_default_shell(void);
 
 /* Signal handler */
 static void signal_handler(int sig) {
@@ -203,11 +212,16 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Using default configuration\n");
     }
     
-    // Get configuration values
-    const char *pid_file = config_get_string(g_config, "daemon", "pid_file", DEFAULT_PID_FILE);
-    const char *log_file = config_get_string(g_config, "daemon", "log_file", "/var/log/pshell.log");
-    const char *log_level_str = config_get_string(g_config, "daemon", "log_level", "info");
-    bool use_syslog = config_get_bool(g_config, "daemon", "use_syslog", true);
+    // Get configuration values (handle NULL config gracefully)
+    const char *pid_file = g_config ? config_get_string(g_config, "daemon", "pid_file", DEFAULT_PID_FILE) : DEFAULT_PID_FILE;
+    const char *log_file = g_config ? config_get_string(g_config, "daemon", "log_file", "/var/log/pshell.log") : "/var/log/pshell.log";
+    const char *log_level_str = g_config ? config_get_string(g_config, "daemon", "log_level", "info") : "info";
+    bool use_syslog = g_config ? config_get_bool(g_config, "daemon", "use_syslog", true) : true;
+    
+    // Get default shell for sessions (copy to static buffer to avoid dangling pointer)
+    const char *shell_config = g_config ? config_get_string(g_config, "sessions", "default_shell", "/bin/sh") : "/bin/sh";
+    strncpy(g_default_shell, shell_config, sizeof(g_default_shell) - 1);
+    g_default_shell[sizeof(g_default_shell) - 1] = '\0';
     
     log_level_t log_level = logger_string_to_level(log_level_str);
     
