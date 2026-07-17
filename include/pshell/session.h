@@ -48,7 +48,24 @@ session_manager_t* session_manager_create(int max_sessions);
 void session_manager_destroy(session_manager_t *mgr);
 
 /**
- * Create new session
+ * Create new session with privilege separation
+ * @param mgr Session manager
+ * @param command Command to execute
+ * @param rows Terminal rows
+ * @param cols Terminal columns
+ * @param uid User ID (0 = use daemon's UID)
+ * @param gid Group ID (0 = use daemon's GID)
+ * @param username Username for logging (optional)
+ * @return Session ID or NULL on error
+ */
+const char* session_manager_create_session_as_user(session_manager_t *mgr,
+                                                    const char *command,
+                                                    int rows, int cols,
+                                                    uid_t uid, gid_t gid,
+                                                    const char *username);
+
+/**
+ * Create new session (legacy, no privilege separation)
  * @param mgr Session manager
  * @param command Command to execute
  * @param rows Terminal rows

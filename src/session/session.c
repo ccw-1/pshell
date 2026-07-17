@@ -89,9 +89,11 @@ void session_manager_destroy(session_manager_t *mgr) {
     log_info("Destroyed session manager");
 }
 
-const char* session_manager_create_session(session_manager_t *mgr,
-                                           const char *command,
-                                           int rows, int cols) {
+const char* session_manager_create_session_as_user(session_manager_t *mgr,
+                                                    const char *command,
+                                                    int rows, int cols,
+                                                    uid_t uid, gid_t gid,
+                                                    const char *username) {
     if (!mgr || !command) {
         log_error("Invalid parameters");
         return NULL;
@@ -136,8 +138,17 @@ const char* session_manager_create_session(session_manager_t *mgr,
         return NULL;
     }
     
-    /* Spawn process */
-    session->pid = process_spawn(session->pty, session->command, NULL);
+    /* Setup credentials for privilege separation */
+    process_credentials_t creds = {0};
+    if (uid != 0 || gid != 0) {
+        creds.uid = uid;
+        creds.gid = gid;
+        creds.username = username;
+    }
+    
+    /* Spawn process with privilege separation */
+    session->pid = process_spawn_with_creds(session->pty, session->command, NULL, 
+                                           (uid != 0 || gid != 0) ? &creds : NULL);
     if (session->pid < 0) {
         log_error("Failed to spawn process");
         pty_destroy(session->pty);
@@ -168,10 +179,21 @@ const char* session_manager_create_session(session_manager_t *mgr,
     
     mgr->session_count++;
     
-    log_info("Created session: id=%s, command=%s, pid=%d, rows=%d, cols=%d",
-             session->id, session->command, session->pid, session->rows, session->cols);
+    if (username) {
+        log_info("Created session: id=%s, command=%s, pid=%d, rows=%d, cols=%d, user=%s",
+                 session->id, session->command, session->pid, session->rows, session->cols, username);
+    } else {
+        log_info("Created session: id=%s, command=%s, pid=%d, rows=%d, cols=%d",
+                 session->id, session->command, session->pid, session->rows, session->cols);
+    }
     
     return session->id;
+}
+
+const char* session_manager_create_session(session_manager_t *mgr,
+                                           const char *command,
+                                           int rows, int cols) {
+    return session_manager_create_session_as_user(mgr, command, rows, cols, 0, 0, NULL);
 }
 
 session_t* session_manager_get(session_manager_t *mgr, const char *session_id) {
