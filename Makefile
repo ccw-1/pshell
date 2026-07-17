@@ -104,7 +104,7 @@ test: $(TEST_BINS)
 
 check: all
 	@echo "Running integration tests..."
-	@cd tests/integration && ./run_tests.sh
+	@./tests/integration/test_full_workflow.sh
 
 clean:
 	@echo "Cleaning build artifacts..."

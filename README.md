@@ -403,13 +403,29 @@ Inspired by:
 
 ## Status
 
-**Current Status**: Planning Phase
+**Current Status**: Phase 9 Complete - Core Implementation Done ✅
 
-- **[Implementation Plan](IMPLEMENTATION_PLAN.md)** - Complete technical plan with architecture and specifications
-- **[Project Overview](wiki/overview.md)** - High-level project description
-- **[Maintenance Guide](docs/MAINTENANCE.md)** - Operations and maintenance procedures
+**Completed Phases**:
+- ✅ Phase 1-4: Core Infrastructure, HTTP Server, Unix Socket, Session Management
+- ✅ Phase 5: Terminal Emulation (VT100 parser, screen buffer)
+- ✅ Phase 6: REST API (all endpoints functional)
+- ✅ Phase 7: Pattern Matching (expect engine, timeout manager)
+- ✅ Phase 8: Web Interface (HTML/CSS/JS frontend)
+- ✅ Phase 9: HTTP CLI Client (pshell-client)
+- ✅ Phase 10: Socket Control Utility (pshellctl)
+
+**Remaining Phases**:
+- ⏳ Phase 11: Additional Testing & Integration Tests
+- ⏳ Phase 12: Final Documentation & Examples
+
+**Build Status**: All binaries compile and run successfully
+- `bin/pshell` - Main daemon (fully functional)
+- `bin/pshell-client` - HTTP CLI client (complete)
+- `bin/pshellctl` - Socket control utility (complete)
+
+See **[PROGRESS.md](PROGRESS.md)** for detailed implementation status.
 
 ---
 
-**Version**: 0.1.0 (planned)  
+**Version**: 0.9.0 (beta)  
 **Last Updated**: 2026-07-17
