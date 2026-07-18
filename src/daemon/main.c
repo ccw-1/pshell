@@ -180,8 +180,15 @@ static void print_version(void) {
 
 /* Main entry point */
 int main(int argc, char **argv) {
+    /* Use write() instead of fprintf() to avoid buffering issues */
+    const char *msg1 = "=== PSHELL DAEMON STARTING ===\n";
+    write(STDERR_FILENO, msg1, strlen(msg1));
+    
     const char *config_file = DEFAULT_CONFIG_FILE;
     bool foreground = false;
+    
+    const char *msg2 = "Parsing arguments...\n";
+    write(STDERR_FILENO, msg2, strlen(msg2));
     
     // Parse command line arguments
     int opt;
@@ -206,7 +213,11 @@ int main(int argc, char **argv) {
     }
     
     // Load configuration
+    fprintf(stderr, "Loading config from: %s\n", config_file);
+    fflush(stderr);
     g_config = config_load(config_file);
+    fprintf(stderr, "Config loaded: %s\n", g_config ? "SUCCESS" : "FAILED");
+    fflush(stderr);
     if (!g_config) {
         fprintf(stderr, "Failed to load configuration from %s\n", config_file);
         fprintf(stderr, "Using default configuration\n");
@@ -218,12 +229,25 @@ int main(int argc, char **argv) {
     const char *log_level_str = g_config ? config_get_string(g_config, "daemon", "log_level", "info") : "info";
     bool use_syslog = g_config ? config_get_bool(g_config, "daemon", "use_syslog", true) : true;
     
+    fprintf(stderr, "Config values retrieved\n");
+    fflush(stderr);
+    
     // Get default shell for sessions (copy to static buffer to avoid dangling pointer)
+    fprintf(stderr, "Getting default shell...\n");
+    fflush(stderr);
     const char *shell_config = g_config ? config_get_string(g_config, "sessions", "default_shell", "/bin/sh") : "/bin/sh";
     strncpy(g_default_shell, shell_config, sizeof(g_default_shell) - 1);
     g_default_shell[sizeof(g_default_shell) - 1] = '\0';
+    fprintf(stderr, "Default shell: %s\n", g_default_shell);
+    fflush(stderr);
+    
+    fprintf(stderr, "Converting log level...\n");
+    fflush(stderr);
     
     log_level_t log_level = logger_string_to_level(log_level_str);
+    
+    fprintf(stderr, "Initializing logger...\n");
+    fflush(stderr);
     
     // Initialize logger (before daemonizing so we can see errors)
     if (!logger_init(log_file, use_syslog, log_level)) {

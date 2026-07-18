@@ -1,7 +1,7 @@
 # Makefile - POSIX-compliant, portable
 CC = cc
-CFLAGS = -Wall -Wextra -std=c99 -D_POSIX_C_SOURCE=200809L -g -O2
-LDFLAGS = -lpthread
+CFLAGS = -Wall -Wextra -std=c99 -D_POSIX_C_SOURCE=200809L -g -O2 -pthread
+LDFLAGS = -pthread
 
 # Platform detection
 UNAME_S := $(shell uname -s)
@@ -63,19 +63,19 @@ all: $(DAEMON) $(CLIENT) $(CTL)
 $(DAEMON): $(DAEMON_OBJECTS)
 	@mkdir -p $(BIN_DIR)
 	@echo "Linking $@..."
-	@$(CC) $(DAEMON_OBJECTS) -o $@ $(LDFLAGS)
+	$(CC) -o $@ $(DAEMON_OBJECTS) -pthread -lpthread -lutil
 	@echo "Built: $@"
 
 $(CLIENT): $(CLIENT_OBJECTS)
 	@mkdir -p $(BIN_DIR)
 	@echo "Linking $@..."
-	@$(CC) $(CLIENT_OBJECTS) -o $@ $(LDFLAGS)
+	@$(CC) -o $@ $(CLIENT_OBJECTS) $(LDFLAGS)
 	@echo "Built: $@"
 
 $(CTL): $(CTL_OBJECTS)
 	@mkdir -p $(BIN_DIR)
 	@echo "Linking $@..."
-	@$(CC) $(CTL_OBJECTS) -o $@ $(LDFLAGS)
+	@$(CC) -o $@ $(CTL_OBJECTS) $(LDFLAGS)
 	@echo "Built: $@"
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c

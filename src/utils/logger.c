@@ -13,15 +13,15 @@ static struct {
     FILE *log_file;
     bool use_syslog;
     log_level_t level;
-    pthread_mutex_t mutex;
     bool initialized;
 } logger_state = {
     .log_file = NULL,
     .use_syslog = false,
     .level = LOG_LEVEL_INFO,
-    .mutex = PTHREAD_MUTEX_INITIALIZER,
     .initialized = false
 };
+
+static pthread_mutex_t logger_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Log level strings */
 static const char* level_strings[] = {
@@ -42,10 +42,10 @@ static const int syslog_priorities[] = {
 };
 
 bool logger_init(const char *log_file, bool use_syslog, log_level_t level) {
-    pthread_mutex_lock(&logger_state.mutex);
+    pthread_mutex_lock(&logger_mutex);
     
     if (logger_state.initialized) {
-        pthread_mutex_unlock(&logger_state.mutex);
+        pthread_mutex_unlock(&logger_mutex);
         return true;
     }
     
@@ -55,7 +55,7 @@ bool logger_init(const char *log_file, bool use_syslog, log_level_t level) {
     if (log_file) {
         logger_state.log_file = fopen(log_file, "a");
         if (!logger_state.log_file) {
-            pthread_mutex_unlock(&logger_state.mutex);
+            pthread_mutex_unlock(&logger_mutex);
             return false;
         }
         // Set line buffering
@@ -68,15 +68,15 @@ bool logger_init(const char *log_file, bool use_syslog, log_level_t level) {
     
     logger_state.initialized = true;
     
-    pthread_mutex_unlock(&logger_state.mutex);
+    pthread_mutex_unlock(&logger_mutex);
     return true;
 }
 
 void logger_shutdown(void) {
-    pthread_mutex_lock(&logger_state.mutex);
+    pthread_mutex_lock(&logger_mutex);
     
     if (!logger_state.initialized) {
-        pthread_mutex_unlock(&logger_state.mutex);
+        pthread_mutex_unlock(&logger_mutex);
         return;
     }
     
@@ -91,28 +91,28 @@ void logger_shutdown(void) {
     
     logger_state.initialized = false;
     
-    pthread_mutex_unlock(&logger_state.mutex);
+    pthread_mutex_unlock(&logger_mutex);
 }
 
 void logger_set_level(log_level_t level) {
-    pthread_mutex_lock(&logger_state.mutex);
+    pthread_mutex_lock(&logger_mutex);
     logger_state.level = level;
-    pthread_mutex_unlock(&logger_state.mutex);
+    pthread_mutex_unlock(&logger_mutex);
 }
 
 log_level_t logger_get_level(void) {
-    pthread_mutex_lock(&logger_state.mutex);
+    pthread_mutex_lock(&logger_mutex);
     log_level_t level = logger_state.level;
-    pthread_mutex_unlock(&logger_state.mutex);
+    pthread_mutex_unlock(&logger_mutex);
     return level;
 }
 
 void logger_vlog(log_level_t level, const char *fmt, va_list args) {
-    pthread_mutex_lock(&logger_state.mutex);
+    pthread_mutex_lock(&logger_mutex);
     
     // Check if we should log this level
     if (level < logger_state.level) {
-        pthread_mutex_unlock(&logger_state.mutex);
+        pthread_mutex_unlock(&logger_mutex);
         return;
     }
     
@@ -149,7 +149,7 @@ void logger_vlog(log_level_t level, const char *fmt, va_list args) {
                 message);
     }
     
-    pthread_mutex_unlock(&logger_state.mutex);
+    pthread_mutex_unlock(&logger_mutex);
 }
 
 void logger_log(log_level_t level, const char *fmt, ...) {

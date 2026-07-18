@@ -58,11 +58,43 @@ class PShellApp {
             this.closeSession();
         });
 
-        // Command input
-        document.getElementById('command-input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                this.sendCommand();
+        // Command input - handle all keypresses
+        const commandInput = document.getElementById('command-input');
+        commandInput.addEventListener('keydown', (e) => {
+            if (!this.currentSessionId) return;
+            
+            // Prevent default for special keys we handle
+            if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Backspace') {
+                e.preventDefault();
             }
+            
+            // Send character directly to session
+            let char = null;
+            if (e.key === 'Enter') {
+                char = '\n';  // Send newline for Enter
+            } else if (e.key === 'Tab') {
+                char = '\t';
+            } else if (e.key === 'Backspace') {
+                char = '\x7f';  // DEL character
+            } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                char = e.key;
+            } else if (e.ctrlKey && e.key.length === 1) {
+                // Handle Ctrl+key combinations
+                const code = e.key.toUpperCase().charCodeAt(0);
+                if (code >= 65 && code <= 90) {
+                    char = String.fromCharCode(code - 64);  // Ctrl+A = 0x01, etc.
+                }
+            }
+            
+            if (char !== null) {
+                console.log('Sending char:', char.charCodeAt(0), 'key:', e.key);
+                this.sendInput(char);
+            }
+        });
+        
+        // Disable the input field's default behavior
+        commandInput.addEventListener('keypress', (e) => {
+            e.preventDefault();
         });
 
         // Modal close buttons
@@ -238,6 +270,8 @@ class PShellApp {
             try {
                 const response = await this.apiClient.readOutput(this.currentSessionId);
                 if (response.output && response.output.length > 0) {
+                    console.log('Received output:', JSON.stringify(response.output), 'length:', response.output.length);
+                    console.log('Output bytes:', Array.from(response.output).map(c => c.charCodeAt(0)));
                     this.terminalRenderer.appendOutput(response.output);
                 }
             } catch (error) {
@@ -249,7 +283,24 @@ class PShellApp {
     }
 
     /**
-     * Send command to session
+     * Send single character/string to session
+     */
+    async sendInput(text) {
+        if (!text || !this.currentSessionId) {
+            return;
+        }
+
+        try {
+            console.log('sendInput called with:', JSON.stringify(text), 'bytes:', Array.from(text).map(c => c.charCodeAt(0)));
+            await this.apiClient.sendInput(this.currentSessionId, text);
+        } catch (error) {
+            console.error('Failed to send input:', error);
+            this.showError('Failed to send input');
+        }
+    }
+    
+    /**
+     * Send command to session (legacy - kept for compatibility)
      */
     async sendCommand() {
         const input = document.getElementById('command-input');

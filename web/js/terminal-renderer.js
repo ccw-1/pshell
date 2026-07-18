@@ -28,31 +28,209 @@ class TerminalRenderer {
      * Process and render text with ANSI codes
      */
     processText(text) {
-        // Split by ANSI escape sequences
-        const ansiRegex = /\x1b\[([0-9;]*)m/g;
-        let lastIndex = 0;
-        let match;
-
-        while ((match = ansiRegex.exec(text)) !== null) {
-            // Add text before escape sequence
-            if (match.index > lastIndex) {
-                const plainText = text.substring(lastIndex, match.index);
-                this.addText(plainText);
+        let i = 0;
+        while (i < text.length) {
+            const ch = text[i];
+            
+            // Handle escape sequences
+            if (ch === '\x1b' && i + 1 < text.length) {
+                const next = text[i + 1];
+                
+                // CSI sequences: ESC [
+                if (next === '[') {
+                    const match = text.substring(i).match(/^\x1b\[([0-9;?]*)([A-Za-z@`])/);
+                    if (match) {
+                        console.log('CSI sequence:', match[0], 'params:', match[1], 'final:', match[2]);
+                        this.processCSI(match[1], match[2]);
+                        i += match[0].length;
+                        continue;
+                    }
+                }
+                
+                // OSC sequences: ESC ]
+                if (next === ']') {
+                    const match = text.substring(i).match(/^\x1b\]([^\x07\x1b]*)([\x07]|\x1b\\)/);
+                    if (match) {
+                        console.log('OSC sequence:', match[0]);
+                        i += match[0].length;
+                        continue;
+                    }
+                }
+                
+                // Simple escape sequences
+                if (next === '7') { // Save cursor
+                    console.log('Save cursor at', this.cursorRow, this.cursorCol);
+                    this.savedCursor = { row: this.cursorRow, col: this.cursorCol };
+                    i += 2;
+                    continue;
+                }
+                if (next === '8') { // Restore cursor
+                    console.log('Restore cursor to', this.savedCursor);
+                    if (this.savedCursor) {
+                        this.cursorRow = this.savedCursor.row;
+                        this.cursorCol = this.savedCursor.col;
+                    }
+                    i += 2;
+                    continue;
+                }
+                
+                // Unknown escape sequence - log and skip
+                console.warn('Unknown escape sequence at', i, ':', text.substring(i, i + 10));
+                i++;
+                continue;
             }
-
-            // Process escape sequence
-            const codes = match[1].split(';').map(c => parseInt(c) || 0);
-            this.processSGR(codes);
-
-            lastIndex = match.index + match[0].length;
-        }
-
-        // Add remaining text
-        if (lastIndex < text.length) {
-            this.addText(text.substring(lastIndex));
+            
+            // Handle control characters
+            if (ch === '\n') {
+                this.cursorRow++;
+                this.cursorCol = 0;
+                i++;
+                continue;
+            }
+            if (ch === '\r') {
+                this.cursorCol = 0;
+                i++;
+                continue;
+            }
+            if (ch === '\t') {
+                this.cursorCol = Math.floor(this.cursorCol / 8) * 8 + 8;
+                i++;
+                continue;
+            }
+            if (ch === '\b') {
+                if (this.cursorCol > 0) this.cursorCol--;
+                i++;
+                continue;
+            }
+            
+            // Printable character
+            if (ch >= ' ' && ch <= '~') {
+                this.putChar(ch);
+            } else if (ch < ' ' || ch === '\x7f') {
+                // Log unhandled control characters
+                console.warn('Unhandled control char:', ch.charCodeAt(0));
+            }
+            
+            i++;
         }
 
         this.render();
+    }
+    
+    /**
+     * Process CSI (Control Sequence Introducer) sequences
+     */
+    processCSI(params, final) {
+        const args = params.split(';').map(p => parseInt(p) || 0);
+        
+        switch (final) {
+            case 'A': // Cursor up
+                this.cursorRow = Math.max(0, this.cursorRow - (args[0] || 1));
+                break;
+            case 'B': // Cursor down
+                this.cursorRow += (args[0] || 1);
+                break;
+            case 'C': // Cursor forward
+                this.cursorCol += (args[0] || 1);
+                break;
+            case 'D': // Cursor back
+                this.cursorCol = Math.max(0, this.cursorCol - (args[0] || 1));
+                break;
+            case 'H': case 'f': // Cursor position
+                this.cursorRow = Math.max(0, (args[0] || 1) - 1);
+                this.cursorCol = Math.max(0, (args[1] || 1) - 1);
+                break;
+            case 'J': // Erase display
+                this.eraseDisplay(args[0] || 0);
+                break;
+            case 'K': // Erase line
+                this.eraseLine(args[0] || 0);
+                break;
+            case 'm': // SGR (colors/attributes)
+                this.processSGR(args.length > 0 ? args : [0]);
+                break;
+            case 's': // Save cursor
+                this.savedCursor = { row: this.cursorRow, col: this.cursorCol };
+                break;
+            case 'u': // Restore cursor
+                if (this.savedCursor) {
+                    this.cursorRow = this.savedCursor.row;
+                    this.cursorCol = this.savedCursor.col;
+                }
+                break;
+        }
+    }
+    
+    /**
+     * Put character at cursor position
+     */
+    putChar(ch) {
+        // Ensure line exists
+        while (this.lines.length <= this.cursorRow) {
+            this.lines.push([]);
+        }
+        
+        // Ensure column exists
+        const line = this.lines[this.cursorRow];
+        while (line.length <= this.cursorCol) {
+            line.push({ char: ' ', style: {} });
+        }
+        
+        // Set character with current style
+        line[this.cursorCol] = {
+            char: ch,
+            style: { ...this.currentStyle }
+        };
+        
+        this.cursorCol++;
+    }
+    
+    /**
+     * Erase display
+     */
+    eraseDisplay(mode) {
+        switch (mode) {
+            case 0: // Cursor to end
+                this.eraseLine(0);
+                for (let r = this.cursorRow + 1; r < this.lines.length; r++) {
+                    this.lines[r] = [];
+                }
+                break;
+            case 1: // Start to cursor
+                for (let r = 0; r < this.cursorRow; r++) {
+                    this.lines[r] = [];
+                }
+                this.eraseLine(1);
+                break;
+            case 2: // Entire screen
+            case 3: // Entire screen + scrollback
+                this.lines = [];
+                this.cursorRow = 0;
+                this.cursorCol = 0;
+                break;
+        }
+    }
+    
+    /**
+     * Erase line
+     */
+    eraseLine(mode) {
+        if (this.cursorRow >= this.lines.length) return;
+        
+        const line = this.lines[this.cursorRow];
+        switch (mode) {
+            case 0: // Cursor to end
+                line.splice(this.cursorCol);
+                break;
+            case 1: // Start to cursor
+                for (let c = 0; c <= this.cursorCol && c < line.length; c++) {
+                    line[c] = { char: ' ', style: {} };
+                }
+                break;
+            case 2: // Entire line
+                this.lines[this.cursorRow] = [];
+                break;
+        }
     }
 
     /**

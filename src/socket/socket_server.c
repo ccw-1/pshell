@@ -5,9 +5,12 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <stdint.h>
+#include <arpa/inet.h>
 
 #define MAX_CONNECTIONS 10
 #define BUFFER_SIZE 8192
@@ -193,15 +196,40 @@ bool socket_server_handle_connection(socket_server_t *server) {
         return false;
     }
     
-    /* Set non-blocking */
-    int flags = fcntl(client_fd, F_GETFL, 0);
-    fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+    /* Set socket timeout (5 seconds) */
+    struct timeval tv;
+    tv.tv_sec = 5;
+    tv.tv_usec = 0;
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    
+    /* Read message length (4 bytes, network byte order) */
+    uint32_t msg_len_net;
+    ssize_t n = read(client_fd, &msg_len_net, sizeof(msg_len_net));
+    
+    if (n != sizeof(msg_len_net)) {
+        if (n < 0) {
+            log_error("Failed to read message length: %s", strerror(errno));
+        }
+        close(client_fd);
+        return false;
+    }
+    
+    size_t msg_len = ntohl(msg_len_net);
+    
+    /* Validate message length */
+    if (msg_len == 0 || msg_len >= BUFFER_SIZE) {
+        log_error("Invalid message length: %zu", msg_len);
+        close(client_fd);
+        return false;
+    }
     
     /* Read message */
     char buffer[BUFFER_SIZE];
-    ssize_t n = read(client_fd, buffer, sizeof(buffer) - 1);
+    n = read(client_fd, buffer, msg_len);
     
-    if (n <= 0) {
+    if (n != (ssize_t)msg_len) {
+        log_error("Failed to read complete message: got %zd, expected %zu", n, msg_len);
         close(client_fd);
         return false;
     }
@@ -218,6 +246,10 @@ bool socket_server_handle_connection(socket_server_t *server) {
     if (server->handler) {
         server->handler(&conn, buffer, server->user_data);
     }
+    
+    /* Ensure data is sent before closing */
+    fsync(client_fd);
+    shutdown(client_fd, SHUT_WR);
     
     /* Close connection */
     close(client_fd);
