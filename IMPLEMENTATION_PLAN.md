@@ -671,6 +671,19 @@ install: all
 - [ ] Maintenance guide
 - [ ] Examples
 
+### Phase 12: Security & Usability Enhancements (Post-Launch)
+- [x] **Privilege Separation**: Sessions can run as specific users when daemon runs as root
+  - Added `process_credentials_t` structure for user/group credentials
+  - Implemented secure privilege dropping (setgid, setgroups, setuid with validation)
+  - Added `session_manager_create_session_as_user()` API
+  - Integrated with PTY spawning for per-session privilege control
+- [x] **Configurable Default Shell**: Optional command parameter with fallback to configured shell
+  - Added `default_shell` configuration option (e.g., `/bin/bash`)
+  - Updated REST API to use default shell when command omitted
+  - Updated socket protocol to use default shell when command omitted
+  - Created comprehensive documentation in `docs/DEFAULT_SHELL.md`
+  - Fixed dangling pointer issue with static buffer for default shell
+
 ## Success Criteria
 
 1. **Portability**

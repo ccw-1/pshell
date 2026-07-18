@@ -16,6 +16,8 @@ A lightweight, portable C-based programmable shell daemon with virtual terminal 
 - **Unix Socket Control**: Local control via Unix domain socket with `pshellctl` utility
 - **Pattern Matching**: POSIX regex-based expect-like automation
 - **Web Interface**: Browser-based debugging and control interface
+- **Privilege Separation**: Sessions can run as specific users when daemon runs as root
+- **Configurable Default Shell**: Optional command parameter with configurable default shell
 - **Portable**: Pure POSIX implementation - runs on Linux, macOS, BSD, Solaris, AIX, z/OS
 - **Minimal Dependencies**: No external libraries required (except POSIX standard)
 
