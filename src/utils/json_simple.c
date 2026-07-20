@@ -58,26 +58,27 @@ static char* parse_string_value(parser_t *p) {
     if (!expect_char(p, '"')) return NULL;
     
     size_t start = p->pos;
-    size_t len = 0;
+    size_t end = start;
     
-    while (p->pos < p->len && p->json[p->pos] != '"') {
-        if (p->json[p->pos] == '\\') {
-            p->pos++; // Skip escape char
-            if (p->pos >= p->len) return NULL;
+    // Find end quote and calculate actual string length
+    while (end < p->len && p->json[end] != '"') {
+        if (p->json[end] == '\\') {
+            end++; // Skip escape char
+            if (end >= p->len) return NULL;
         }
-        p->pos++;
-        len++;
+        end++;
     }
     
-    if (!expect_char(p, '"')) return NULL;
+    if (end >= p->len || p->json[end] != '"') return NULL;
     
-    char *str = malloc(len + 1);
+    size_t raw_len = end - start;
+    char *str = malloc(raw_len + 1);
     if (!str) return NULL;
     
     // Copy and unescape
     size_t j = 0;
-    for (size_t i = start; i < start + len; i++) {
-        if (p->json[i] == '\\' && i + 1 < start + len) {
+    for (size_t i = start; i < end; i++) {
+        if (p->json[i] == '\\' && i + 1 < end) {
             i++;
             switch (p->json[i]) {
                 case 'n': str[j++] = '\n'; break;
@@ -92,6 +93,8 @@ static char* parse_string_value(parser_t *p) {
         }
     }
     str[j] = '\0';
+    
+    p->pos = end + 1; // Move past closing quote
     
     return str;
 }
