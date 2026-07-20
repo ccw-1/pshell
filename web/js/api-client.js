@@ -87,6 +87,10 @@ class PShellAPIClient {
      * Send input to session
      */
     async sendInput(sessionId, text) {
+        // Debug: log what we're about to send
+        console.log('API sendInput - text:', JSON.stringify(text), 
+                    'length:', text.length,
+                    'charCodes:', Array.from(text).map(c => c.charCodeAt(0)));
         return await this.request('POST', `/api/sessions/${sessionId}/send`, {
             text
         });

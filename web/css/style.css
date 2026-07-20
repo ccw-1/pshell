@@ -202,36 +202,15 @@ header h1 {
     gap: 0.5rem;
 }
 
-/* Terminal */
+/* Terminal - xterm.js container */
 .terminal {
     flex: 1;
     background-color: var(--terminal-bg);
-    color: #ffffff;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 14px;
-    line-height: 1.4;
-    padding: 1rem;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    word-wrap: break-word;
+    padding: 0.5rem;
+    overflow: hidden;
 }
 
-.terminal::-webkit-scrollbar {
-    width: 8px;
-}
-
-.terminal::-webkit-scrollbar-track {
-    background: var(--terminal-bg);
-}
-
-.terminal::-webkit-scrollbar-thumb {
-    background: #3e3e42;
-    border-radius: 4px;
-}
-
-.terminal::-webkit-scrollbar-thumb:hover {
-    background: #4e4e52;
-}
+/* xterm.js will handle its own scrollbar styling */
 
 .welcome-screen {
     display: flex;

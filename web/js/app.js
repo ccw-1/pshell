@@ -1,16 +1,16 @@
 /**
  * pshell Web Application
- * Main application logic
+ * Main application logic with xterm.js integration
  */
 
 class PShellApp {
     constructor() {
         this.apiClient = new PShellAPIClient();
-        this.terminalRenderer = null;
+        this.terminal = null;
         this.currentSessionId = null;
         this.sessions = new Map();
         this.pollInterval = null;
-        this.pollIntervalMs = 500; // Poll every 500ms
+        this.pollIntervalMs = 100; // Poll every 100ms for responsive output
 
         this.initializeUI();
         this.loadSessions();
@@ -38,14 +38,19 @@ class PShellApp {
 
         // Clear terminal
         document.getElementById('clear-btn').addEventListener('click', () => {
-            if (this.terminalRenderer) {
-                this.terminalRenderer.clear();
+            if (this.terminal) {
+                this.terminal.clear();
             }
         });
 
         // Resize terminal
         document.getElementById('resize-btn').addEventListener('click', () => {
-            this.showModal('resize-modal');
+            if (this.terminal && this.currentSessionId) {
+                const dims = this.terminal.getDimensions();
+                document.getElementById('resize-rows').value = dims.rows;
+                document.getElementById('resize-cols').value = dims.cols;
+                this.showModal('resize-modal');
+            }
         });
 
         // Resize confirm
@@ -56,45 +61,6 @@ class PShellApp {
         // Close session
         document.getElementById('close-btn').addEventListener('click', () => {
             this.closeSession();
-        });
-
-        // Command input - handle all keypresses
-        const commandInput = document.getElementById('command-input');
-        commandInput.addEventListener('keydown', (e) => {
-            if (!this.currentSessionId) return;
-            
-            // Prevent default for special keys we handle
-            if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Backspace') {
-                e.preventDefault();
-            }
-            
-            // Send character directly to session
-            let char = null;
-            if (e.key === 'Enter') {
-                char = '\n';  // Send newline for Enter
-            } else if (e.key === 'Tab') {
-                char = '\t';
-            } else if (e.key === 'Backspace') {
-                char = '\x7f';  // DEL character
-            } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-                char = e.key;
-            } else if (e.ctrlKey && e.key.length === 1) {
-                // Handle Ctrl+key combinations
-                const code = e.key.toUpperCase().charCodeAt(0);
-                if (code >= 65 && code <= 90) {
-                    char = String.fromCharCode(code - 64);  // Ctrl+A = 0x01, etc.
-                }
-            }
-            
-            if (char !== null) {
-                console.log('Sending char:', char.charCodeAt(0), 'key:', e.key);
-                this.sendInput(char);
-            }
-        });
-        
-        // Disable the input field's default behavior
-        commandInput.addEventListener('keypress', (e) => {
-            e.preventDefault();
         });
 
         // Modal close buttons
@@ -113,10 +79,6 @@ class PShellApp {
                 }
             });
         });
-
-        // Initialize terminal renderer
-        const terminalElement = document.getElementById('terminal');
-        this.terminalRenderer = new TerminalRenderer(terminalElement);
     }
 
     /**
@@ -221,6 +183,50 @@ class PShellApp {
     }
 
     /**
+     * Initialize terminal for session
+     */
+    initTerminal() {
+        // Clear terminal container
+        const terminalContainer = document.getElementById('terminal');
+        terminalContainer.innerHTML = '';
+
+        // Create new terminal instance
+        this.terminal = new XTermTerminal(terminalContainer);
+        this.terminal.init();
+
+        // Set up input handler - send all input to session
+        this.terminal.onData((data) => {
+            if (this.currentSessionId) {
+                // Debug: log what xterm.js is sending
+                console.log('Terminal input:', JSON.stringify(data), 'charCodes:', Array.from(data).map(c => c.charCodeAt(0)));
+                
+                // CRITICAL FIX: xterm.js sends \r for Enter, but we need to ensure it's sent as actual CR
+                // The issue is that when data contains \r (0x0D), it needs to stay as 0x0D through JSON
+                this.sendInput(data);
+            }
+        });
+
+        // Set up resize handler
+        this.terminal.onResize(({ cols, rows }) => {
+            if (this.currentSessionId) {
+                this.apiClient.resizeTerminal(this.currentSessionId, rows, cols)
+                    .then(() => {
+                        const session = this.sessions.get(this.currentSessionId);
+                        if (session) {
+                            session.rows = rows;
+                            session.cols = cols;
+                            document.getElementById('terminal-size').textContent = `${rows}x${cols}`;
+                        }
+                    })
+                    .catch(err => console.error('Failed to resize:', err));
+            }
+        });
+
+        // Focus terminal
+        this.terminal.focus();
+    }
+
+    /**
      * Select session
      */
     async selectSession(sessionId) {
@@ -235,17 +241,21 @@ class PShellApp {
 
         // Update UI
         document.getElementById('terminal-header').style.display = 'flex';
-        document.getElementById('terminal-input').style.display = 'block';
+        document.getElementById('terminal-input').style.display = 'none'; // Hide old input field
         document.getElementById('terminal-title').textContent = session.command;
         document.getElementById('terminal-size').textContent = `${session.rows}x${session.cols}`;
 
-        // Load screen state
+        // Initialize terminal
+        this.initTerminal();
+
+        // Load initial screen state
         try {
             const screen = await this.apiClient.getScreen(sessionId);
-            this.terminalRenderer.setScreen(screen.text, screen.cursor_row, screen.cursor_col);
+            if (screen.text) {
+                this.terminal.write(screen.text);
+            }
         } catch (error) {
             console.error('Failed to load screen:', error);
-            this.terminalRenderer.clear();
         }
 
         // Start polling for output
@@ -253,9 +263,6 @@ class PShellApp {
 
         // Render session list to update active state
         this.renderSessionList();
-
-        // Focus input
-        document.getElementById('command-input').focus();
     }
 
     /**
@@ -263,16 +270,19 @@ class PShellApp {
      */
     startPolling() {
         this.pollInterval = setInterval(async () => {
-            if (!this.currentSessionId) {
+            if (!this.currentSessionId || !this.terminal) {
                 return;
             }
 
             try {
                 const response = await this.apiClient.readOutput(this.currentSessionId);
                 if (response.output && response.output.length > 0) {
-                    console.log('Received output:', JSON.stringify(response.output), 'length:', response.output.length);
-                    console.log('Output bytes:', Array.from(response.output).map(c => c.charCodeAt(0)));
-                    this.terminalRenderer.appendOutput(response.output);
+                    // Debug: log what we're receiving
+                    console.log('Received output:', JSON.stringify(response.output.substring(0, 100)), 
+                                'length:', response.output.length,
+                                'charCodes:', Array.from(response.output.substring(0, 20)).map(c => c.charCodeAt(0)));
+                    // Write directly to xterm.js - it handles all escape sequences
+                    this.terminal.write(response.output);
                 }
             } catch (error) {
                 console.error('Failed to read output:', error);
@@ -283,36 +293,15 @@ class PShellApp {
     }
 
     /**
-     * Send single character/string to session
+     * Send input to session
      */
-    async sendInput(text) {
-        if (!text || !this.currentSessionId) {
+    async sendInput(data) {
+        if (!data || !this.currentSessionId) {
             return;
         }
 
         try {
-            console.log('sendInput called with:', JSON.stringify(text), 'bytes:', Array.from(text).map(c => c.charCodeAt(0)));
-            await this.apiClient.sendInput(this.currentSessionId, text);
-        } catch (error) {
-            console.error('Failed to send input:', error);
-            this.showError('Failed to send input');
-        }
-    }
-    
-    /**
-     * Send command to session (legacy - kept for compatibility)
-     */
-    async sendCommand() {
-        const input = document.getElementById('command-input');
-        const text = input.value;
-
-        if (!text || !this.currentSessionId) {
-            return;
-        }
-
-        try {
-            await this.apiClient.sendInput(this.currentSessionId, text + '\n');
-            input.value = '';
+            await this.apiClient.sendInput(this.currentSessionId, data);
         } catch (error) {
             console.error('Failed to send input:', error);
             this.showError('Failed to send input');
@@ -326,12 +315,17 @@ class PShellApp {
         const rows = parseInt(document.getElementById('resize-rows').value);
         const cols = parseInt(document.getElementById('resize-cols').value);
 
-        if (!this.currentSessionId) {
+        if (!this.currentSessionId || !this.terminal) {
             return;
         }
 
         try {
+            // Resize on server
             await this.apiClient.resizeTerminal(this.currentSessionId, rows, cols);
+            
+            // Resize terminal
+            this.terminal.resize(rows, cols);
+            
             this.hideModal('resize-modal');
             
             // Update session info
@@ -339,10 +333,6 @@ class PShellApp {
             session.rows = rows;
             session.cols = cols;
             document.getElementById('terminal-size').textContent = `${rows}x${cols}`;
-            
-            // Reload screen
-            const screen = await this.apiClient.getScreen(this.currentSessionId);
-            this.terminalRenderer.setScreen(screen.text, screen.cursor_row, screen.cursor_col);
         } catch (error) {
             console.error('Failed to resize terminal:', error);
             this.showError('Failed to resize terminal');
@@ -370,6 +360,12 @@ class PShellApp {
                 this.pollInterval = null;
             }
 
+            // Dispose terminal
+            if (this.terminal) {
+                this.terminal.dispose();
+                this.terminal = null;
+            }
+
             this.currentSessionId = null;
             this.showWelcomeScreen();
             this.loadSessions();
@@ -393,13 +389,18 @@ class PShellApp {
                 <p>Create a new session or select an existing one to get started.</p>
             </div>
         `;
+
+        // Dispose terminal if exists
+        if (this.terminal) {
+            this.terminal.dispose();
+            this.terminal = null;
+        }
     }
 
     /**
      * Show error message
      */
     showError(message) {
-        // Simple error display - could be enhanced with a toast/notification system
         alert(message);
     }
 

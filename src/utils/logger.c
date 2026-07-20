@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <syslog.h>
 #include <unistd.h>
+#include <errno.h>
 
 /* Logger state */
 static struct {
@@ -21,7 +22,16 @@ static struct {
     .initialized = false
 };
 
-static pthread_mutex_t logger_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t logger_mutex;
+static pthread_once_t logger_mutex_once = PTHREAD_ONCE_INIT;
+
+static void init_logger_mutex(void) {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&logger_mutex, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
 
 /* Log level strings */
 static const char* level_strings[] = {
@@ -42,6 +52,7 @@ static const int syslog_priorities[] = {
 };
 
 bool logger_init(const char *log_file, bool use_syslog, log_level_t level) {
+    pthread_once(&logger_mutex_once, init_logger_mutex);
     pthread_mutex_lock(&logger_mutex);
     
     if (logger_state.initialized) {
@@ -53,13 +64,21 @@ bool logger_init(const char *log_file, bool use_syslog, log_level_t level) {
     logger_state.use_syslog = use_syslog;
     
     if (log_file) {
+        fprintf(stderr, "DEBUG: About to fopen(%s, \"a\")\n", log_file);
+        fflush(stderr);
         logger_state.log_file = fopen(log_file, "a");
+        fprintf(stderr, "DEBUG: fopen returned %p, errno=%d\n", (void*)logger_state.log_file, errno);
+        fflush(stderr);
         if (!logger_state.log_file) {
+            fprintf(stderr, "DEBUG: fopen failed: %s\n", strerror(errno));
+            fflush(stderr);
             pthread_mutex_unlock(&logger_mutex);
             return false;
         }
         // Set line buffering
         setvbuf(logger_state.log_file, NULL, _IOLBF, 0);
+        fprintf(stderr, "DEBUG: Logger file opened successfully\n");
+        fflush(stderr);
     }
     
     if (use_syslog) {
@@ -108,6 +127,7 @@ log_level_t logger_get_level(void) {
 }
 
 void logger_vlog(log_level_t level, const char *fmt, va_list args) {
+    pthread_once(&logger_mutex_once, init_logger_mutex);
     pthread_mutex_lock(&logger_mutex);
     
     // Check if we should log this level

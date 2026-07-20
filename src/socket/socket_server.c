@@ -1,5 +1,6 @@
 #include "pshell/socket_server.h"
 #include "pshell/logger.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -79,15 +80,25 @@ void socket_server_destroy(socket_server_t *server) {
 bool socket_server_start(socket_server_t *server) {
     if (!server) return false;
     
+    fprintf(stderr, "DEBUG: socket_server_start: entry\n");
+    fflush(stderr);
+    
     /* Remove existing socket file */
     unlink(server->socket_path);
+    
+    fprintf(stderr, "DEBUG: socket_server_start: creating socket\n");
+    fflush(stderr);
     
     /* Create socket */
     server->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (server->listen_fd < 0) {
-        log_error("Failed to create socket: %s", strerror(errno));
+        fprintf(stderr, "DEBUG: socket() failed: %s\n", strerror(errno));
+        fflush(stderr);
         return false;
     }
+    
+    fprintf(stderr, "DEBUG: socket_server_start: binding\n");
+    fflush(stderr);
     
     /* Bind */
     struct sockaddr_un addr;
@@ -96,37 +107,54 @@ bool socket_server_start(socket_server_t *server) {
     strncpy(addr.sun_path, server->socket_path, sizeof(addr.sun_path) - 1);
     
     if (bind(server->listen_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        log_error("Failed to bind socket %s: %s",
-                  server->socket_path, strerror(errno));
+        fprintf(stderr, "DEBUG: bind() failed: %s\n", strerror(errno));
+        fflush(stderr);
         close(server->listen_fd);
         server->listen_fd = -1;
         return false;
     }
+    
+    fprintf(stderr, "DEBUG: socket_server_start: setting permissions\n");
+    fflush(stderr);
     
     /* Set permissions */
     if (chmod(server->socket_path, server->permissions) < 0) {
-        log_error("Failed to set socket permissions: %s", strerror(errno));
+        fprintf(stderr, "DEBUG: chmod() failed: %s\n", strerror(errno));
+        fflush(stderr);
         close(server->listen_fd);
         unlink(server->socket_path);
         server->listen_fd = -1;
         return false;
     }
     
+    fprintf(stderr, "DEBUG: socket_server_start: listening\n");
+    fflush(stderr);
+    
     /* Listen */
     if (listen(server->listen_fd, MAX_CONNECTIONS) < 0) {
-        log_error("Failed to listen on socket: %s", strerror(errno));
+        fprintf(stderr, "DEBUG: listen() failed: %s\n", strerror(errno));
+        fflush(stderr);
         close(server->listen_fd);
         unlink(server->socket_path);
         server->listen_fd = -1;
         return false;
     }
+    
+    fprintf(stderr, "DEBUG: socket_server_start: setting non-blocking\n");
+    fflush(stderr);
     
     /* Set non-blocking */
     int flags = fcntl(server->listen_fd, F_GETFL, 0);
     fcntl(server->listen_fd, F_SETFL, flags | O_NONBLOCK);
     
+    fprintf(stderr, "DEBUG: socket_server_start: about to call log_info\n");
+    fflush(stderr);
+    
     server->running = true;
     log_info("Socket server listening on %s", server->socket_path);
+    
+    fprintf(stderr, "DEBUG: socket_server_start: completed successfully\n");
+    fflush(stderr);
     
     return true;
 }

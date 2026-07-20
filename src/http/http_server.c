@@ -272,16 +272,26 @@ void http_server_destroy(http_server_t *server) {
 bool http_server_start(http_server_t *server) {
     if (!server) return false;
     
+    fprintf(stderr, "DEBUG: http_server_start: creating socket\n");
+    fflush(stderr);
+    
     /* Create socket */
     server->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server->listen_fd < 0) {
-        log_error("Failed to create socket: %s", strerror(errno));
+        fprintf(stderr, "DEBUG: socket() failed: %s\n", strerror(errno));
+        fflush(stderr);
         return false;
     }
+    
+    fprintf(stderr, "DEBUG: socket created: fd=%d\n", server->listen_fd);
+    fflush(stderr);
     
     /* Set socket options */
     int opt = 1;
     setsockopt(server->listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    
+    fprintf(stderr, "DEBUG: socket options set, about to bind\n");
+    fflush(stderr);
     
     /* Bind */
     struct sockaddr_in addr;
@@ -291,27 +301,40 @@ bool http_server_start(http_server_t *server) {
     inet_pton(AF_INET, server->bind_addr, &addr.sin_addr);
     
     if (bind(server->listen_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        log_error("Failed to bind to %s:%d: %s",
-                  server->bind_addr, server->port, strerror(errno));
+        fprintf(stderr, "DEBUG: bind() failed: %s\n", strerror(errno));
+        fflush(stderr);
         close(server->listen_fd);
         server->listen_fd = -1;
         return false;
     }
     
+    fprintf(stderr, "DEBUG: bind successful, about to listen\n");
+    fflush(stderr);
+    
     /* Listen */
     if (listen(server->listen_fd, 10) < 0) {
-        log_error("Failed to listen: %s", strerror(errno));
+        fprintf(stderr, "DEBUG: listen() failed: %s\n", strerror(errno));
+        fflush(stderr);
         close(server->listen_fd);
         server->listen_fd = -1;
         return false;
     }
+    
+    fprintf(stderr, "DEBUG: listen successful, setting non-blocking\n");
+    fflush(stderr);
     
     /* Set non-blocking */
     int flags = fcntl(server->listen_fd, F_GETFL, 0);
     fcntl(server->listen_fd, F_SETFL, flags | O_NONBLOCK);
     
+    fprintf(stderr, "DEBUG: non-blocking set, about to log_info\n");
+    fflush(stderr);
+    
     server->running = true;
     log_info("HTTP server listening on %s:%d", server->bind_addr, server->port);
+    
+    fprintf(stderr, "DEBUG: http_server_start completed successfully\n");
+    fflush(stderr);
     
     return true;
 }
@@ -346,8 +369,9 @@ bool http_server_register_route(http_server_t *server, http_method_t method,
     server->routes[server->route_count].active = true;
     server->route_count++;
     
-    log_debug("Registered route: %s %s",
+    fprintf(stderr, "DEBUG: Registered route: %s %s\n",
               http_method_to_string(method), path);
+    fflush(stderr);
     
     return true;
 }

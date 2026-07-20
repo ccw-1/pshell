@@ -153,6 +153,13 @@ pid_t process_spawn_argv_with_creds(pty_t *pty, char **argv, char **env, const p
             _exit(1);
         }
         
+        // Configure slave terminal to raw mode BEFORE redirecting
+        struct termios tios;
+        if (tcgetattr(slave_fd, &tios) == 0) {
+            cfmakeraw(&tios);
+            tcsetattr(slave_fd, TCSANOW, &tios);
+        }
+        
         // Redirect stdin, stdout, stderr to slave PTY
         if (dup2(slave_fd, STDIN_FILENO) < 0 ||
             dup2(slave_fd, STDOUT_FILENO) < 0 ||
