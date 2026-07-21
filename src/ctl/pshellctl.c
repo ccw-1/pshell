@@ -51,8 +51,12 @@ static void print_usage(const char *prog) {
     printf("      Get session information\n");
     printf("\n");
     printf("  send <session-id> <text>\n");
-    printf("      Send text to session\n");
-    printf("      Supports escape sequences: \\n \\r \\t \\cC (Ctrl-C) \\x03 \\033 etc.\n");
+    printf("      Send text to session with escape sequence support:\n");
+    printf("        Standard: \\n \\r \\t \\e (ESC) \\cC (Ctrl-C)\n");
+    printf("        Function keys: \\F1 through \\F12\n");
+    printf("        Arrow keys: \\UP \\DOWN \\LEFT \\RIGHT\n");
+    printf("        Special: \\HOME \\END \\INS \\DEL \\PGUP \\PGDN\n");
+    printf("        Numeric: \\x03 (hex) \\033 (octal)\n");
     printf("\n");
     printf("  output <session-id>\n");
     printf("      Read output from session\n");

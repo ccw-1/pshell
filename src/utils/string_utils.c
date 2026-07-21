@@ -259,6 +259,119 @@ size_t str_unescape(char *str) {
                 case 'v':  *dst++ = '\v'; break;
                 case 'e':  *dst++ = '\033'; break;  /* ESC */
                 
+                /* Function keys: \F1 through \F12 */
+                case 'F':
+                    src++;
+                    if (*src >= '1' && *src <= '9') {
+                        int fkey = *src - '0';
+                        src++;
+                        if (*src >= '0' && *src <= '9') {
+                            fkey = fkey * 10 + (*src - '0');
+                        } else {
+                            src--;  /* Only one digit */
+                        }
+                        
+                        if (fkey >= 1 && fkey <= 12) {
+                            /* Send xterm-style function key sequences */
+                            if (fkey <= 4) {
+                                /* F1-F4: ESC O P/Q/R/S */
+                                *dst++ = '\033';
+                                *dst++ = 'O';
+                                *dst++ = 'P' + (fkey - 1);
+                            } else {
+                                /* F5-F12: ESC [ 15~24 ~ */
+                                const char *seq[] = {
+                                    "[15~", "[17~", "[18~", "[19~",  /* F5-F8 */
+                                    "[20~", "[21~", "[23~", "[24~"   /* F9-F12 */
+                                };
+                                *dst++ = '\033';
+                                const char *s = seq[fkey - 5];
+                                while (*s) *dst++ = *s++;
+                            }
+                        } else {
+                            /* Invalid function key number */
+                            *dst++ = 'F';
+                            src -= (fkey >= 10) ? 1 : 0;
+                        }
+                    } else {
+                        /* Not a function key, copy literal */
+                        *dst++ = 'F';
+                        src--;
+                    }
+                    break;
+                
+                /* Special keys: \UP \DOWN \LEFT \RIGHT \HOME \END \INS \DEL \PGUP \PGDN */
+                case 'U':  /* UP */
+                    if (src[1] == 'P' && (src[2] == '\0' || src[2] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'A';
+                        src++;
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
+                case 'D':  /* DOWN or DEL */
+                    if (src[1] == 'O' && src[2] == 'W' && src[3] == 'N' && (src[4] == '\0' || src[4] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'B';
+                        src += 3;
+                    } else if (src[1] == 'E' && src[2] == 'L' && (src[3] == '\0' || src[3] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = '3'; *dst++ = '~';
+                        src += 2;
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
+                case 'L':  /* LEFT */
+                    if (src[1] == 'E' && src[2] == 'F' && src[3] == 'T' && (src[4] == '\0' || src[4] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'D';
+                        src += 3;
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
+                case 'R':  /* RIGHT */
+                    if (src[1] == 'I' && src[2] == 'G' && src[3] == 'H' && src[4] == 'T' && (src[5] == '\0' || src[5] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'C';
+                        src += 4;
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
+                case 'H':  /* HOME */
+                    if (src[1] == 'O' && src[2] == 'M' && src[3] == 'E' && (src[4] == '\0' || src[4] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'H';
+                        src += 3;
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
+                case 'E':  /* END */
+                    if (src[1] == 'N' && src[2] == 'D' && (src[3] == '\0' || src[3] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'F';
+                        src += 2;
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
+                case 'I':  /* INS */
+                    if (src[1] == 'N' && src[2] == 'S' && (src[3] == '\0' || src[3] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = '2'; *dst++ = '~';
+                        src += 2;
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
+                case 'P':  /* PGUP or PGDN */
+                    if (src[1] == 'G' && src[2] == 'U' && src[3] == 'P' && (src[4] == '\0' || src[4] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = '5'; *dst++ = '~';
+                        src += 3;
+                    } else if (src[1] == 'G' && src[2] == 'D' && src[3] == 'N' && (src[4] == '\0' || src[4] == '\\')) {
+                        *dst++ = '\033'; *dst++ = '['; *dst++ = '6'; *dst++ = '~';
+                        src += 3;
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
+                
                 /* Control characters: \cX -> Ctrl-X */
                 case 'c':
                 case 'C':

@@ -151,7 +151,12 @@ int str_format(char *buf, size_t size, const char *fmt, ...);
 
 /**
  * Process escape sequences in string (in-place)
- * Supports: \n \r \t \\ \0 \xHH \NNN (octal) \cX (control chars)
+ * Supports:
+ *   Standard: \n \r \t \\ \0 \a \b \f \v \e
+ *   Control: \cX (Ctrl-X where X is A-Z)
+ *   Numeric: \xHH (hex) \NNN (octal)
+ *   Function keys: \F1 through \F12
+ *   Special keys: \UP \DOWN \LEFT \RIGHT \HOME \END \INS \DEL \PGUP \PGDN
  * @param str String to process (will be modified)
  * @return Length of processed string
  */
