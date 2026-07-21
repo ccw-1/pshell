@@ -39,8 +39,9 @@ static void print_usage(const char *prog) {
     printf("  -h           Show this help\n");
     printf("\n");
     printf("Commands:\n");
-    printf("  create [--command <cmd>] [--rows <n>] [--cols <n>]\n");
+    printf("  create [--command <cmd>] [--rows <n>] [--cols <n>] [--scrollback <lines>]\n");
     printf("      Create new session\n");
+    printf("      --scrollback: Number of scrollback lines (default: 1000)\n");
     printf("\n");
     printf("  list\n");
     printf("      List all sessions\n");
@@ -58,7 +59,9 @@ static void print_usage(const char *prog) {
     printf("      Get screen state\n");
     printf("\n");
     printf("  scrollback <session-id> [--start <n>] [--count <n>]\n");
-    printf("      Get scrollback buffer lines\n");
+    printf("      Get scrollback buffer lines (terminal history)\n");
+    printf("      --start: Starting line index (default: 0)\n");
+    printf("      --count: Number of lines to retrieve (default: 100)\n");
     printf("\n");
     printf("  resize <session-id> <rows> <cols>\n");
     printf("      Resize terminal\n");
@@ -78,6 +81,7 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
     const char *command = "bash";
     int rows = 24;
     int cols = 80;
+    int scrollback_lines = 0;  /* 0 = use default (1000) */
     
     /* Parse arguments */
     for (int i = 0; i < argc; i++) {
@@ -87,14 +91,16 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
             rows = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--cols") == 0 && i + 1 < argc) {
             cols = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--scrollback") == 0 && i + 1 < argc) {
+            scrollback_lines = atoi(argv[++i]);
         }
     }
     
     /* Build request */
     char request[1024];
     snprintf(request, sizeof(request),
-             "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d}}",
-             command, rows, cols);
+             "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d}}",
+             command, rows, cols, scrollback_lines);
     
     /* Send request */
     char response[4096];
