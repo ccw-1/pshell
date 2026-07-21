@@ -8,6 +8,7 @@
 #include "pshell/socket_client.h"
 #include "pshell/json_simple.h"
 #include "pshell/logger.h"
+#include "pshell/string_utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,7 @@ static void print_usage(const char *prog) {
     printf("\n");
     printf("  send <session-id> <text>\n");
     printf("      Send text to session\n");
+    printf("      Supports escape sequences: \\n \\r \\t \\cC (Ctrl-C) \\x03 \\033 etc.\n");
     printf("\n");
     printf("  output <session-id>\n");
     printf("      Read output from session\n");
@@ -262,17 +264,23 @@ static int cmd_info(socket_client_t *client, int argc, char **argv) {
 static int cmd_send(socket_client_t *client, int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: send <session-id> <text>\n");
+        fprintf(stderr, "Escape sequences: \\n \\r \\t \\cC (Ctrl-C) \\x03 \\033 etc.\n");
         return 1;
     }
     
     const char *session_id = argv[0];
-    const char *text = argv[1];
+    
+    /* Process escape sequences in text */
+    char text_buf[4096];
+    strncpy(text_buf, argv[1], sizeof(text_buf) - 1);
+    text_buf[sizeof(text_buf) - 1] = '\0';
+    str_unescape(text_buf);
     
     /* Build request */
     char request[4096];
     snprintf(request, sizeof(request),
              "{\"method\":\"send_text\",\"params\":{\"id\":\"%s\",\"text\":\"%s\"}}",
-             session_id, text);
+             session_id, text_buf);
     
     /* Send request */
     char response[1024];

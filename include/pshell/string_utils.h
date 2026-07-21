@@ -149,4 +149,12 @@ bool str_is_blank(const char *str);
  */
 int str_format(char *buf, size_t size, const char *fmt, ...);
 
+/**
+ * Process escape sequences in string (in-place)
+ * Supports: \n \r \t \\ \0 \xHH \NNN (octal) \cX (control chars)
+ * @param str String to process (will be modified)
+ * @return Length of processed string
+ */
+size_t str_unescape(char *str);
+
 #endif /* PSHELL_STRING_UTILS_H */

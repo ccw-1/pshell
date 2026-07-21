@@ -235,3 +235,100 @@ int str_format(char *buf, size_t size, const char *fmt, ...) {
     
     return written > 0 ? written : 0;
 }
+
+
+size_t str_unescape(char *str) {
+    if (!str) return 0;
+    
+    char *src = str;
+    char *dst = str;
+    
+    while (*src) {
+        if (*src == '\\' && *(src + 1)) {
+            src++;  /* Skip backslash */
+            
+            switch (*src) {
+                case 'n':  *dst++ = '\n'; break;
+                case 'r':  *dst++ = '\r'; break;
+                case 't':  *dst++ = '\t'; break;
+                case '\\': *dst++ = '\\'; break;
+                case '0':  *dst++ = '\0'; break;
+                case 'a':  *dst++ = '\a'; break;
+                case 'b':  *dst++ = '\b'; break;
+                case 'f':  *dst++ = '\f'; break;
+                case 'v':  *dst++ = '\v'; break;
+                case 'e':  *dst++ = '\033'; break;  /* ESC */
+                
+                /* Control characters: \cX -> Ctrl-X */
+                case 'c':
+                case 'C':
+                    src++;
+                    if (*src >= '@' && *src <= '_') {
+                        *dst++ = *src - '@';  /* Ctrl-A = 1, Ctrl-C = 3, etc. */
+                    } else if (*src >= 'a' && *src <= 'z') {
+                        *dst++ = *src - 'a' + 1;  /* Ctrl-a = 1, Ctrl-c = 3, etc. */
+                    } else {
+                        *dst++ = *src;  /* Invalid, copy as-is */
+                    }
+                    break;
+                
+                /* Hex escape: \xHH */
+                case 'x':
+                    src++;
+                    if (isxdigit((unsigned char)*src)) {
+                        int val = 0;
+                        if (isdigit((unsigned char)*src)) {
+                            val = *src - '0';
+                        } else {
+                            val = tolower((unsigned char)*src) - 'a' + 10;
+                        }
+                        src++;
+                        if (isxdigit((unsigned char)*src)) {
+                            val = val * 16;
+                            if (isdigit((unsigned char)*src)) {
+                                val += *src - '0';
+                            } else {
+                                val += tolower((unsigned char)*src) - 'a' + 10;
+                            }
+                        } else {
+                            src--;  /* Only one hex digit */
+                        }
+                        *dst++ = (char)val;
+                    } else {
+                        src--;  /* No hex digits, treat as literal */
+                        *dst++ = 'x';
+                    }
+                    break;
+                
+                /* Octal escape: \NNN */
+                default:
+                    if (*src >= '0' && *src <= '7') {
+                        int val = *src - '0';
+                        src++;
+                        if (*src >= '0' && *src <= '7') {
+                            val = val * 8 + (*src - '0');
+                            src++;
+                            if (*src >= '0' && *src <= '7') {
+                                val = val * 8 + (*src - '0');
+                            } else {
+                                src--;
+                            }
+                        } else {
+                            src--;
+                        }
+                        *dst++ = (char)val;
+                    } else {
+                        /* Unknown escape, copy literal */
+                        *dst++ = *src;
+                    }
+                    break;
+            }
+            src++;
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    
+    *dst = '\0';
+    return dst - str;
+}
