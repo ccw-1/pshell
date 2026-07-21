@@ -573,24 +573,11 @@ static void handle_get_output(http_request_t *req, http_response_t *resp, void *
     
     buffer[n] = '\0';
     
-    /* Convert LF to CRLF for web terminal (xterm.js expects CRLF) */
-    char converted[8192];
-    size_t conv_len = 0;
-    for (ssize_t i = 0; i < n && conv_len < sizeof(converted) - 2; i++) {
-        if (buffer[i] == '\n' && (i == 0 || buffer[i-1] != '\r')) {
-            /* LF without preceding CR - add CR */
-            converted[conv_len++] = '\r';
-            converted[conv_len++] = '\n';
-        } else {
-            converted[conv_len++] = buffer[i];
-        }
-    }
-    
     /* Escape output for JSON */
     char escaped[8192];
     size_t j = 0;
-    for (size_t i = 0; i < conv_len && j < sizeof(escaped) - 2; i++) {
-        switch (converted[i]) {
+    for (ssize_t i = 0; i < n && j < sizeof(escaped) - 2; i++) {
+        switch (buffer[i]) {
             case '"':  escaped[j++] = '\\'; escaped[j++] = '"'; break;
             case '\\': escaped[j++] = '\\'; escaped[j++] = '\\'; break;
             case '\n': escaped[j++] = '\\'; escaped[j++] = 'n'; break;

@@ -17,15 +17,17 @@
 ### 2. Scattered Text Display
 **Problem**: Terminal output appeared scattered across multiple lines with missing carriage returns, making text unreadable.
 
-**Root Cause**: Terminal emulation was receiving only Line Feed (LF/\n) without Carriage Return (CR/\r). In terminal emulation, a newline should move to the next line AND return to column 0.
+**Root Cause**: **Double CR conversion** - Terminal output already contained some CRLF sequences (`\r\n`), but the JavaScript was blindly converting ALL `\n` to `\r\n`, creating `\r\r\n` sequences that confused xterm.js cursor positioning.
 
-**Solution**: 
-- Modified `src/terminal/screen_buffer.c` - `screen_buffer_newline()` now sets `cursor.col = 0` to make LF behave as CRLF
-- Modified `web/js/app.js` - Added JavaScript conversion `output.replace(/\n/g, '\r\n')` before writing to xterm.js
+**Solution (3 layers)**:
+1. **Screen Buffer** (`src/terminal/screen_buffer.c`): `screen_buffer_newline()` sets `cursor.col = 0` to make LF behave as CRLF in the internal buffer
+2. **Frontend** (`web/js/app.js`): Smart CRLF conversion using `replace(/([^\r])\n/g, '$1\r\n')` - only converts bare LF (not preceded by CR) to avoid double-converting existing CRLF sequences
+3. **HTTP Server** (`src/http/http_server.c`): Added no-cache headers for .js and .css files to prevent browser caching issues
 
 **Files Changed**:
 - `src/terminal/screen_buffer.c` (line ~446)
-- `web/js/app.js` (line ~283)
+- `web/js/app.js` (line ~284-289)
+- `src/http/http_server.c` (added Cache-Control headers)
 
 ## Testing
 
@@ -36,10 +38,16 @@
 ✅ Proper line breaks and cursor positioning
 ✅ No more endless scrolling
 ✅ Text displays correctly on separate lines
+✅ No double CR characters causing scattered text
 
 ## Technical Details
 
-The fix ensures that:
+The complete fix ensures that:
 1. Output is consumed from the buffer on each read (prevents loops)
 2. Newlines properly reset cursor to column 0 (prevents scattered text)
-3. Web terminal receives CRLF sequences for proper display
+3. Smart CRLF conversion prevents double-converting existing CRLF sequences
+4. Browser loads fresh JavaScript without caching issues
+
+## Git Commits
+- Initial fixes: `aa4ed7d`
+- Final double CR fix: `1ad9b6a`
