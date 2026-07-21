@@ -506,6 +506,12 @@ bool http_server_handle_connection(http_server_t *server) {
             }
             
             http_response_set_header(resp, "Content-Type", content_type);
+            /* Prevent browser caching for JS/CSS files to ensure updates are loaded */
+            if (ext && (strcmp(ext, ".js") == 0 || strcmp(ext, ".css") == 0)) {
+                http_response_set_header(resp, "Cache-Control", "no-cache, no-store, must-revalidate");
+                http_response_set_header(resp, "Pragma", "no-cache");
+                http_response_set_header(resp, "Expires", "0");
+            }
             if (http_response_send_file(resp, file_path)) {
                 handled = true;
             }
