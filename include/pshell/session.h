@@ -98,6 +98,13 @@ session_t* session_manager_get(session_manager_t *mgr, const char *session_id);
 bool session_manager_destroy_session(session_manager_t *mgr, const char *session_id);
 
 /**
+ * Cleanup dead sessions
+ * @param mgr Session manager
+ * @return Number of sessions cleaned up
+ */
+int session_manager_cleanup_dead_sessions(session_manager_t *mgr);
+
+/**
  * List all sessions
  * @param mgr Session manager
  * @param infos Output array of session info

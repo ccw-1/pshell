@@ -151,6 +151,10 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
             }
             
             log_debug("Read %zd bytes from PTY for session %s", n, session->id);
+        } else if (n == 0) {
+            /* EOF - process has exited */
+            log_info("PTY EOF for session %s - process exited", session->id);
+            session->state = SESSION_STATE_DEAD;
         } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             log_debug("PTY read error for session %s: %s", session->id, strerror(errno));
         }
@@ -399,7 +403,7 @@ int session_manager_count(const session_manager_t *mgr) {
     return mgr ? mgr->session_count : 0;
 }
 
-int session_manager_cleanup(session_manager_t *mgr) {
+int session_manager_cleanup_dead_sessions(session_manager_t *mgr) {
     if (!mgr) return 0;
     
     int cleaned = 0;

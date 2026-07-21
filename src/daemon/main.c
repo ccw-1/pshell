@@ -583,7 +583,8 @@ int main(int argc, char **argv) {
         }
         
         // Events are handled by callbacks
-        // TODO: Check for dead sessions
+        // Check for dead sessions periodically
+        session_manager_cleanup_dead_sessions(g_session_mgr);
         // TODO: Handle timeouts
     }
     
