@@ -26,6 +26,8 @@ static void handle_resize_terminal(http_request_t *req, http_response_t *resp, v
 static void handle_get_output(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_get_screen(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_get_raw(http_request_t *req, http_response_t *resp, void *user_data);
+static void handle_get_scrollback(http_request_t *req, http_response_t *resp, void *user_data);
+
 static void handle_status(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_health(http_request_t *req, http_response_t *resp, void *user_data);
 
@@ -131,6 +133,9 @@ bool rest_api_register_routes(rest_api_t *api) {
                                "/api/sessions/:id/screen", handle_get_screen, api);
     http_server_register_route(api->server, HTTP_METHOD_GET,
                                "/api/sessions/:id/raw", handle_get_raw, api);
+    http_server_register_route(api->server, HTTP_METHOD_GET,
+                               "/api/sessions/:id/scrollback", handle_get_scrollback, api);
+
     
     /* System */
     http_server_register_route(api->server, HTTP_METHOD_GET,
@@ -180,6 +185,7 @@ static void handle_create_session(http_request_t *req, http_response_t *resp, vo
     const char *command = json_object_get_string(json, "command");
     int rows = json_object_get_int(json, "rows", 24);
     int cols = json_object_get_int(json, "cols", 80);
+    int scrollback_lines = json_object_get_int(json, "scrollback_lines", 1000);
     
     /* Use default shell if command not specified */
     if (!command) {
@@ -188,7 +194,7 @@ static void handle_create_session(http_request_t *req, http_response_t *resp, vo
     }
     
     /* Create session using session manager */
-    const char *session_id = session_manager_create_session(api->session_mgr, command, rows, cols);
+    const char *session_id = session_manager_create_session(api->session_mgr, command, rows, cols, scrollback_lines);
     if (!session_id) {
         json_free(json);
         http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to create session");
@@ -827,5 +833,94 @@ static void handle_get_raw(http_request_t *req, http_response_t *resp, void *use
     free(response);
     free(escaped);
     free(raw_data);
+}
+
+/* Handler: Get scrollback */
+static void handle_get_scrollback(http_request_t *req, http_response_t *resp, void *user_data) {
+    rest_api_t *api = (rest_api_t*)user_data;
+    
+    if (!check_auth(api, req, resp)) return;
+    
+    /* Get session ID from URL */
+    char *session_id = extract_session_id(http_request_get_path(req));
+    if (!session_id) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid session ID");
+        return;
+    }
+    
+    /* Get query parameters */
+    const char *start_str = http_request_get_query(req, "start_line");
+    const char *count_str = http_request_get_query(req, "count");
+    
+    int start_line = start_str ? atoi(start_str) : 0;
+    int count = count_str ? atoi(count_str) : 100;
+    
+    /* Get session */
+    session_t *session = session_manager_get(api->session_mgr, session_id);
+    if (!session) {
+        http_response_send_error(resp, HTTP_STATUS_NOT_FOUND, "Session not found");
+        return;
+    }
+    
+    /* Get scrollback info */
+    int scrollback_size = session_get_scrollback_size(session);
+    int scrollback_used = session_get_scrollback_used(session);
+    
+    /* Validate parameters */
+    if (start_line < 0 || start_line >= scrollback_used) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid start_line");
+        return;
+    }
+    
+    if (count <= 0) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid count");
+        return;
+    }
+    
+    /* Limit count to available lines */
+    if (start_line + count > scrollback_used) {
+        count = scrollback_used - start_line;
+    }
+    
+    /* Build JSON response */
+    char response[8192];
+    int offset = snprintf(response, sizeof(response),
+                         "{\"scrollback_size\":%d,\"scrollback_used\":%d,\"start_line\":%d,\"count\":%d,\"lines\":[",
+                         scrollback_size, scrollback_used, start_line, count);
+    
+    for (int i = 0; i < count && offset < (int)sizeof(response) - 100; i++) {
+        char line_buffer[256];
+        ssize_t line_len = session_get_scrollback_line(session, start_line + i, line_buffer, sizeof(line_buffer));
+        
+        if (line_len < 0) break;
+        
+        if (i > 0) {
+            offset += snprintf(response + offset, sizeof(response) - offset, ",");
+        }
+        
+        offset += snprintf(response + offset, sizeof(response) - offset, "\"");
+        
+        /* Escape line for JSON */
+        for (ssize_t j = 0; j < line_len && offset < (int)sizeof(response) - 10; j++) {
+            switch (line_buffer[j]) {
+                case '\n': offset += snprintf(response + offset, sizeof(response) - offset, "\\n"); break;
+                case '\r': offset += snprintf(response + offset, sizeof(response) - offset, "\\r"); break;
+                case '\t': offset += snprintf(response + offset, sizeof(response) - offset, "\\t"); break;
+                case '"': offset += snprintf(response + offset, sizeof(response) - offset, "\\\""); break;
+                case '\\': offset += snprintf(response + offset, sizeof(response) - offset, "\\\\"); break;
+                default:
+                    if (line_buffer[j] >= 32) {
+                        response[offset++] = line_buffer[j];
+                    }
+                    break;
+            }
+        }
+        
+        offset += snprintf(response + offset, sizeof(response) - offset, "\"");
+    }
+    
+    snprintf(response + offset, sizeof(response) - offset, "]}");
+    
+    http_response_send_json(resp, HTTP_STATUS_OK, response);
     free(session_id);
 }

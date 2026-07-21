@@ -28,6 +28,8 @@ static void handle_get_output(socket_connection_t *conn, json_value_t *params, s
 static void handle_get_screen(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 static void handle_resize_session(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 static void handle_expect_pattern(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
+static void handle_get_scrollback(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
+
 static void handle_daemon_status(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 
 static const char* state_to_string(session_state_t state) {
@@ -112,6 +114,8 @@ void socket_protocol_handler(socket_connection_t *conn, const char *message, voi
         handle_get_output(conn, params, mgr);
     } else if (strcmp(method, "get_screen") == 0) {
         handle_get_screen(conn, params, mgr);
+    } else if (strcmp(method, "get_scrollback") == 0) {
+        handle_get_scrollback(conn, params, mgr);
     } else if (strcmp(method, "resize_session") == 0) {
         handle_resize_session(conn, params, mgr);
     } else if (strcmp(method, "expect_pattern") == 0) {
@@ -134,6 +138,7 @@ static void handle_create_session(socket_connection_t *conn, json_value_t *param
     const char *command = json_object_get_string(params, "command");
     int rows = json_object_get_int(params, "rows", 24);
     int cols = json_object_get_int(params, "cols", 80);
+    int scrollback_lines = json_object_get_int(params, "scrollback_lines", 1000);
     
     /* Use default shell if command not specified */
     if (!command) {
@@ -142,7 +147,7 @@ static void handle_create_session(socket_connection_t *conn, json_value_t *param
     }
     
     /* Create session */
-    const char *session_id = session_manager_create_session(mgr, command, rows, cols);
+    const char *session_id = session_manager_create_session(mgr, command, rows, cols, scrollback_lines);
     if (!session_id) {
         send_error(conn, "Failed to create session");
         return;
@@ -442,6 +447,90 @@ static void handle_daemon_status(socket_connection_t *conn, json_value_t *params
     snprintf(result, sizeof(result),
              "{\"status\":\"running\",\"sessions\":%d}",
              count);
+    
+    send_success(conn, result);
+}
+
+static void handle_get_scrollback(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
+    if (!params) {
+        send_error(conn, "Missing params");
+        return;
+    }
+    
+    const char *session_id = json_object_get_string(params, "id");
+    if (!session_id) {
+        send_error(conn, "Missing session id");
+        return;
+    }
+    
+    int start_line = json_object_get_int(params, "start_line", 0);
+    int count = json_object_get_int(params, "count", 100);
+    
+    /* Get session */
+    session_t *session = session_manager_get(mgr, session_id);
+    if (!session) {
+        send_error(conn, "Session not found");
+        return;
+    }
+    
+    /* Get scrollback info */
+    int scrollback_size = session_get_scrollback_size(session);
+    int scrollback_used = session_get_scrollback_used(session);
+    
+    /* Validate parameters */
+    if (start_line < 0 || start_line >= scrollback_used) {
+        send_error(conn, "Invalid start_line");
+        return;
+    }
+    
+    if (count <= 0) {
+        send_error(conn, "Invalid count");
+        return;
+    }
+    
+    /* Limit count to available lines */
+    if (start_line + count > scrollback_used) {
+        count = scrollback_used - start_line;
+    }
+    
+    /* Build response with lines array */
+    char result[8192];
+    int offset = snprintf(result, sizeof(result), 
+                         "{\"scrollback_size\":%d,\"scrollback_used\":%d,\"start_line\":%d,\"count\":%d,\"lines\":[",
+                         scrollback_size, scrollback_used, start_line, count);
+    
+    for (int i = 0; i < count && offset < (int)sizeof(result) - 100; i++) {
+        char line_buffer[256];
+        ssize_t line_len = session_get_scrollback_line(session, start_line + i, line_buffer, sizeof(line_buffer));
+        
+        if (line_len < 0) break;
+        
+        if (i > 0) {
+            offset += snprintf(result + offset, sizeof(result) - offset, ",");
+        }
+        
+        offset += snprintf(result + offset, sizeof(result) - offset, "\"");
+        
+        /* Escape line for JSON */
+        for (ssize_t j = 0; j < line_len && offset < (int)sizeof(result) - 10; j++) {
+            switch (line_buffer[j]) {
+                case '\n': offset += snprintf(result + offset, sizeof(result) - offset, "\\n"); break;
+                case '\r': offset += snprintf(result + offset, sizeof(result) - offset, "\\r"); break;
+                case '\t': offset += snprintf(result + offset, sizeof(result) - offset, "\\t"); break;
+                case '"': offset += snprintf(result + offset, sizeof(result) - offset, "\\\""); break;
+                case '\\': offset += snprintf(result + offset, sizeof(result) - offset, "\\\\"); break;
+                default:
+                    if (line_buffer[j] >= 32) {
+                        result[offset++] = line_buffer[j];
+                    }
+                    break;
+            }
+        }
+        
+        offset += snprintf(result + offset, sizeof(result) - offset, "\"");
+    }
+    
+    snprintf(result + offset, sizeof(result) - offset, "]}");
     
     send_success(conn, result);
 }

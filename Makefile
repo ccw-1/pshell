@@ -128,6 +128,14 @@ install: all
 	install -m 644 config/pshell.conf $(DESTDIR)/etc/pshell/
 	@echo "Installation complete."
 
+deploy: all
+	@echo "deploying locally"
+	cp $(DAEMON) ~/local/bin
+	cp $(CLIENT) ~/local/bin
+	cp $(CTL) ~/local/bin
+	cp config/pshell.conf ~/local/etc
+	@echo "deploy complete."
+
 help:
 	@echo "pshell - Portable Programmable Shell"
 	@echo ""

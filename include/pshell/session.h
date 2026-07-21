@@ -64,7 +64,8 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
                                                     const char *command,
                                                     int rows, int cols,
                                                     uid_t uid, gid_t gid,
-                                                    const char *username);
+                                                    const char *username,
+                                                    int scrollback_lines);
 
 /**
  * Create new session (legacy, no privilege separation)
@@ -72,11 +73,13 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
  * @param command Command to execute
  * @param rows Terminal rows
  * @param cols Terminal columns
+ * @param scrollback_lines Number of scrollback lines (0 = default 1000)
  * @return Session ID or NULL on error
  */
 const char* session_manager_create_session(session_manager_t *mgr,
                                            const char *command,
-                                           int rows, int cols);
+                                           int rows, int cols,
+                                           int scrollback_lines);
 
 /**
  * Get session by ID
@@ -249,6 +252,32 @@ size_t session_peek_raw_output(const session_t *session, char *buffer, size_t si
  * @param session Session
  */
 void session_clear_raw_buffer(session_t *session);
+
+/**
+ * Get scrollback buffer size
+ * @param session Session
+ * @return Number of scrollback lines configured
+ */
+int session_get_scrollback_size(const session_t *session);
+
+/**
+ * Get scrollback buffer used lines
+ * @param session Session
+ * @return Number of lines currently in scrollback buffer
+ */
+int session_get_scrollback_used(const session_t *session);
+
+/**
+ * Get scrollback line
+ * @param session Session
+ * @param line_index Line index (0 = oldest, scrollback_used-1 = newest)
+ * @param buffer Output buffer
+ * @param size Buffer size
+ * @return Number of characters written, or -1 if index out of bounds
+ */
+ssize_t session_get_scrollback_line(const session_t *session, int line_index, char *buffer, size_t size);
+
+
 
 void session_get_cursor_position(const session_t *session, int *row, int *col);
 

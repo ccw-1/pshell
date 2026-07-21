@@ -81,6 +81,12 @@ main() {
     
     # Wait for command to complete
     sleep 2
+
+    log_info "Sending 'ssh pok2b' command..."
+    send_text "ssh pok2b\n"
+
+    # Wait for command to complete
+    sleep 10 
     
     # Step 3: Get screen state
     log_info "Retrieving screen state (24 lines x 80 cols)..."

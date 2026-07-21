@@ -26,6 +26,8 @@ static int cmd_output(socket_client_t *client, int argc, char **argv);
 static int cmd_screen(socket_client_t *client, int argc, char **argv);
 static int cmd_resize(socket_client_t *client, int argc, char **argv);
 static int cmd_expect(socket_client_t *client, int argc, char **argv);
+static int cmd_scrollback(socket_client_t *client, int argc, char **argv);
+
 static int cmd_destroy(socket_client_t *client, int argc, char **argv);
 static int cmd_status(socket_client_t *client, int argc, char **argv);
 
@@ -54,6 +56,9 @@ static void print_usage(const char *prog) {
     printf("\n");
     printf("  screen <session-id>\n");
     printf("      Get screen state\n");
+    printf("\n");
+    printf("  scrollback <session-id> [--start <n>] [--count <n>]\n");
+    printf("      Get scrollback buffer lines\n");
     printf("\n");
     printf("  resize <session-id> <rows> <cols>\n");
     printf("      Resize terminal\n");
@@ -435,6 +440,87 @@ static int cmd_resize(socket_client_t *client, int argc, char **argv) {
     return 0;
 }
 
+static int cmd_scrollback(socket_client_t *client, int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "Usage: scrollback <session-id> [--start <n>] [--count <n>]\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    int start_line = 0;
+    int count = 100;
+    
+    /* Parse arguments */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--start") == 0 && i + 1 < argc) {
+            start_line = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) {
+            count = atoi(argv[++i]);
+        }
+    }
+    
+    /* Build request */
+    char request[1024];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"get_scrollback\",\"params\":{\"id\":\"%s\",\"start_line\":%d,\"count\":%d}}",
+             session_id, start_line, count);
+    
+    /* Send request */
+    char response[16384];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            int scrollback_size = json_object_get_int(result, "scrollback_size", 0);
+            int scrollback_used = json_object_get_int(result, "scrollback_used", 0);
+            int ret_start = json_object_get_int(result, "start_line", 0);
+            int ret_count = json_object_get_int(result, "count", 0);
+            
+            printf("Scrollback: %d/%d lines used\n", scrollback_used, scrollback_size);
+            printf("Showing lines %d-%d:\n\n", ret_start, ret_start + ret_count - 1);
+            
+            json_value_t *lines = json_object_get(result, "lines");
+            if (lines && lines->type == JSON_ARRAY) {
+                size_t line_count = json_array_size(lines);
+                for (size_t i = 0; i < line_count; i++) {
+                    json_value_t *line = json_array_get(lines, i);
+                    if (line && line->type == JSON_STRING) {
+                        const char *line_text = json_get_string(line);
+                        if (line_text) {
+                            printf("%s\n", line_text);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        json_value_t *error = json_object_get(root, "error");
+        if (error) {
+            const char *message = json_object_get_string(error, "message");
+            if (message) {
+                fprintf(stderr, "Error: %s\n", message);
+            }
+        }
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
 static int cmd_expect(socket_client_t *client, int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: expect <session-id> <pattern> [timeout_ms]\n");
@@ -627,6 +713,8 @@ int main(int argc, char **argv) {
         result = cmd_output(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "screen") == 0) {
         result = cmd_screen(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "scrollback") == 0) {
+        result = cmd_scrollback(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "resize") == 0) {
         result = cmd_resize(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "expect") == 0) {

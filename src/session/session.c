@@ -166,7 +166,8 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
                                                     const char *command,
                                                     int rows, int cols,
                                                     uid_t uid, gid_t gid,
-                                                    const char *username) {
+                                                    const char *username,
+                                                    int scrollback_lines) {
     if (!mgr || !command) {
         log_error("Invalid parameters");
         return NULL;
@@ -233,7 +234,8 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     pty_set_child_pid(session->pty, session->pid);
     
     /* Initialize terminal emulation */
-    session->screen = screen_buffer_create(session->rows, session->cols, 1000);
+    int scrollback = (scrollback_lines > 0) ? scrollback_lines : 1000;
+    session->screen = screen_buffer_create(session->rows, session->cols, scrollback);
     if (!session->screen) {
         log_error("Failed to create screen buffer");
         kill(session->pid, SIGTERM);
@@ -298,8 +300,9 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
 
 const char* session_manager_create_session(session_manager_t *mgr,
                                            const char *command,
-                                           int rows, int cols) {
-    return session_manager_create_session_as_user(mgr, command, rows, cols, 0, 0, NULL);
+                                           int rows, int cols,
+                                           int scrollback_lines) {
+    return session_manager_create_session_as_user(mgr, command, rows, cols, 0, 0, NULL, scrollback_lines);
 }
 
 session_t* session_manager_get(session_manager_t *mgr, const char *session_id) {
@@ -661,5 +664,33 @@ void session_clear_raw_buffer(session_t *session) {
     }
     
     session->raw_read_pos = session->raw_write_pos;
-    session->raw_available = 0;
+}
+
+int session_get_scrollback_size(const session_t *session) {
+    if (!session || !session->screen) return 0;
+    return session->screen->scrollback_size;
+}
+
+int session_get_scrollback_used(const session_t *session) {
+    if (!session || !session->screen) return 0;
+    return session->screen->scrollback_used;
+}
+
+ssize_t session_get_scrollback_line(const session_t *session, int line_index, char *buffer, size_t size) {
+    if (!session || !session->screen || !buffer || size == 0) return -1;
+    
+    const char_cell_t *line = screen_buffer_get_scrollback_line(session->screen, line_index);
+    if (!line) return -1;
+    
+    /* Convert cells to text */
+    size_t pos = 0;
+    for (int col = 0; col < session->screen->cols && pos < size - 1; col++) {
+        char ch = line[col].ch;
+        if (ch >= 32 || ch == '\t') {
+            buffer[pos++] = ch;
+        }
+    }
+    buffer[pos] = '\0';
+    
+    return pos;
 }
