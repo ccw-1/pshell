@@ -283,8 +283,12 @@ class PShellApp {
                                 'charCodes:', Array.from(response.output.substring(0, 20)).map(c => c.charCodeAt(0)));
                     
                     // xterm.js needs CRLF for proper line breaks
-                    // Simply replace all LF with CRLF (screen buffer handles cursor positioning)
-                    let output = response.output.replace(/\n/g, '\r\n');
+                    // Replace bare LF (not preceded by CR) with CRLF
+                    let output = response.output.replace(/([^\r])\n/g, '$1\r\n');
+                    // Handle LF at start of string
+                    if (output.startsWith('\n')) {
+                        output = '\r' + output;
+                    }
                     
                     this.terminal.write(output);
                 }
