@@ -11,7 +11,8 @@ A lightweight, portable C-based programmable shell daemon with virtual terminal 
 ## Features
 
 - **Multiple PTY Sessions**: Manage multiple concurrent pseudo-terminal sessions (like tmux)
-- **VT100/xterm Emulation**: Full terminal emulation with screen buffer and scrollback
+- **VT100/xterm Emulation**: Full terminal emulation with screen buffer and configurable scrollback
+- **Scrollback Buffer**: Configurable scrollback buffer size (default 1000 lines) with API access to retrieve terminal history
 - **REST API**: Simple HTTP/REST API for external control (no external dependencies)
 - **Unix Socket Control**: Local control via Unix domain socket with `pshellctl` utility
 - **Pattern Matching**: POSIX regex-based expect-like automation
@@ -57,6 +58,9 @@ pshellctl list
 # Send text
 pshellctl send <session-id> "ls -la\n"
 
+# Get scrollback buffer (retrieve terminal history)
+pshellctl scrollback <session-id> --start 0 --count 50
+
 # Expect pattern
 pshellctl expect <session-id> "password:" --timeout 5000
 
@@ -70,17 +74,21 @@ pshellctl destroy <session-id>
 ### Control via REST API
 
 ```bash
-# Create session
+# Create session with custom scrollback buffer
 curl -X POST http://localhost:8080/api/sessions \
   -H "X-API-Key: mykey" \
   -H "Content-Type: application/json" \
-  -d '{"command":"ssh user@host","rows":24,"cols":80}'
+  -d '{"command":"ssh user@host","rows":24,"cols":80,"scrollback_lines":5000}'
 
 # Send text
 curl -X POST http://localhost:8080/api/sessions/<session-id>/send \
   -H "X-API-Key: mykey" \
   -H "Content-Type: application/json" \
   -d '{"text":"ls -la\n"}'
+
+# Get scrollback buffer
+curl -X GET "http://localhost:8080/api/sessions/<session-id>/scrollback?start_line=0&count=50" \
+  -H "X-API-Key: mykey"
 
 # Expect pattern
 curl -X POST http://localhost:8080/api/sessions/<session-id>/expect \

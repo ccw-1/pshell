@@ -53,10 +53,11 @@ curl http://127.0.0.1:8080/api/sessions
 - `GET /api/health` - Health check
 - `GET /api/status` - Server status
 - `GET /api/sessions` - List sessions
-- `POST /api/sessions` - Create session
+- `POST /api/sessions` - Create session (supports `scrollback_lines` parameter)
 - `GET /api/sessions/:id` - Get session info
 - `DELETE /api/sessions/:id` - Destroy session
 - `POST /api/sessions/:id/send` - Send input
+- `GET /api/sessions/:id/scrollback` - Get scrollback buffer (query params: `start_line`, `count`)
 - `POST /api/sessions/:id/expect` - Wait for pattern
 - `POST /api/sessions/:id/resize` - Resize terminal
 - `GET /api/sessions/:id/output` - Get output (long poll)
