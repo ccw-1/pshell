@@ -12,6 +12,10 @@
 #include <errno.h>
 
 #define MAX_SESSIONS 100
+#define RAW_BUFFER_SIZE (64 * 1024)  /* 64KB circular buffer for raw PTY output */
+
+/* Forward declaration of PTY callback */
+static void session_pty_callback(int fd, io_event_type_t events, void *user_data);
 
 /* Session structure */
 struct session {
@@ -29,6 +33,13 @@ struct session {
     /* Terminal emulation */
     screen_buffer_t *screen;
     vt100_parser_t parser;
+    
+    /* Raw PTY output buffer (circular) */
+    char *raw_buffer;
+    size_t raw_buffer_size;
+    size_t raw_write_pos;
+    size_t raw_read_pos;
+    size_t raw_available;
 };
 
 /* Session manager structure */
@@ -36,11 +47,17 @@ struct session_manager {
     session_t sessions[MAX_SESSIONS];
     int max_sessions;
     int session_count;
+    io_multiplexer_t *mux;  /* I/O multiplexer for monitoring PTY FDs */
 };
 
-session_manager_t* session_manager_create(int max_sessions) {
+session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mux) {
     if (max_sessions <= 0 || max_sessions > MAX_SESSIONS) {
         log_error("Invalid max_sessions: %d", max_sessions);
+        return NULL;
+    }
+    
+    if (!mux) {
+        log_error("Invalid I/O multiplexer");
         return NULL;
     }
     
@@ -52,6 +69,7 @@ session_manager_t* session_manager_create(int max_sessions) {
     
     mgr->max_sessions = max_sessions;
     mgr->session_count = 0;
+    mgr->mux = mux;
     
     /* Initialize all sessions as inactive */
     for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -87,6 +105,61 @@ void session_manager_destroy(session_manager_t *mgr) {
     
     free(mgr);
     log_info("Destroyed session manager");
+}
+
+/* PTY callback - called when PTY has data to read */
+static void session_pty_callback(int fd, io_event_type_t events, void *user_data) {
+    (void)fd;  /* Unused parameter */
+    session_t *session = (session_t *)user_data;
+    
+    if (!session || !session->active || !session->pty) {
+        log_warn("PTY callback for inactive session");
+        return;
+    }
+    
+    if (events & IO_EVENT_READ) {
+        char buffer[4096];
+        ssize_t n = pty_read(session->pty, buffer, sizeof(buffer));
+        
+        if (n > 0) {
+            session->last_activity = time(NULL);
+            
+            /* Store raw output in circular buffer */
+            if (session->raw_buffer) {
+                for (ssize_t i = 0; i < n; i++) {
+                    session->raw_buffer[session->raw_write_pos] = buffer[i];
+                    session->raw_write_pos = (session->raw_write_pos + 1) % session->raw_buffer_size;
+                    
+                    /* Update available count, handle overflow */
+                    if (session->raw_available < session->raw_buffer_size) {
+                        session->raw_available++;
+                    } else {
+                        /* Buffer full, advance read position (drop oldest data) */
+                        session->raw_read_pos = (session->raw_read_pos + 1) % session->raw_buffer_size;
+                    }
+                }
+            }
+            
+            /* Parse VT100 sequences and update screen buffer */
+            if (session->screen) {
+                vt100_sequence_t seq;
+                for (ssize_t i = 0; i < n; i++) {
+                    if (vt100_parser_feed(&session->parser, buffer[i], &seq)) {
+                        screen_buffer_process_sequence(session->screen, &seq);
+                    }
+                }
+            }
+            
+            log_debug("Read %zd bytes from PTY for session %s", n, session->id);
+        } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            log_debug("PTY read error for session %s: %s", session->id, strerror(errno));
+        }
+    }
+    
+    if (events & IO_EVENT_ERROR) {
+        log_debug("PTY error event for session %s", session->id);
+        session->state = SESSION_STATE_DEAD;
+    }
 }
 
 const char* session_manager_create_session_as_user(session_manager_t *mgr,
@@ -171,11 +244,44 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     }
     vt100_parser_init(&session->parser);
     
+    /* Initialize raw PTY output buffer */
+    session->raw_buffer = malloc(RAW_BUFFER_SIZE);
+    if (!session->raw_buffer) {
+        log_error("Failed to allocate raw buffer");
+        screen_buffer_destroy(session->screen);
+        kill(session->pid, SIGTERM);
+        waitpid(session->pid, NULL, WNOHANG);
+        pty_destroy(session->pty);
+        session->pty = NULL;
+        session->screen = NULL;
+        return NULL;
+    }
+    session->raw_buffer_size = RAW_BUFFER_SIZE;
+    session->raw_write_pos = 0;
+    session->raw_read_pos = 0;
+    session->raw_available = 0;
+    
     /* Initialize session state */
     session->state = SESSION_STATE_ACTIVE;
     session->created = time(NULL);
     session->last_activity = session->created;
     session->active = true;
+    
+    /* Add PTY master FD to multiplexer for monitoring */
+    int pty_fd = pty_get_master_fd(session->pty);
+    if (pty_fd >= 0 && mgr->mux) {
+        if (!io_multiplexer_add(mgr->mux, pty_fd, IO_EVENT_READ, session_pty_callback, session)) {
+            log_error("Failed to add PTY FD to multiplexer");
+            screen_buffer_destroy(session->screen);
+            kill(session->pid, SIGTERM);
+            waitpid(session->pid, NULL, WNOHANG);
+            pty_destroy(session->pty);
+            session->pty = NULL;
+            session->screen = NULL;
+            return NULL;
+        }
+        log_debug("Added PTY FD %d to multiplexer for session %s", pty_fd, session->id);
+    }
     
     mgr->session_count++;
     
@@ -236,6 +342,15 @@ bool session_manager_destroy_session(session_manager_t *mgr, const char *session
         waitpid(session->pid, NULL, WNOHANG);
     }
     
+    /* Remove PTY FD from multiplexer */
+    if (session->pty && mgr->mux) {
+        int pty_fd = pty_get_master_fd(session->pty);
+        if (pty_fd >= 0) {
+            io_multiplexer_remove(mgr->mux, pty_fd);
+            log_debug("Removed PTY FD %d from multiplexer for session %s", pty_fd, session->id);
+        }
+    }
+    
     /* Destroy PTY */
     if (session->pty) {
         pty_destroy(session->pty);
@@ -246,6 +361,12 @@ bool session_manager_destroy_session(session_manager_t *mgr, const char *session
     if (session->screen) {
         screen_buffer_destroy(session->screen);
         session->screen = NULL;
+    }
+    
+    /* Free raw buffer */
+    if (session->raw_buffer) {
+        free(session->raw_buffer);
+        session->raw_buffer = NULL;
     }
     
     /* Mark as inactive */
@@ -359,35 +480,19 @@ ssize_t session_send_input(session_t *session, const char *data, size_t len) {
 ssize_t session_read_output(session_t *session, char *buffer, size_t size) {
     if (!session || !buffer || size == 0) return -1;
     
-    if (!session->pty) {
-        log_error("Session PTY not open");
+    if (!session->screen) {
+        log_error("Session screen buffer not available");
         return -1;
     }
     
-    ssize_t n = pty_read(session->pty, buffer, size);
-    
-    if (n < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            log_error("Failed to read from PTY: %s", strerror(errno));
-        }
-        return -1;
-    }
+    /* Read from screen buffer instead of PTY (PTY is read by callback) */
+    size_t n = session_get_screen_text(session, buffer, size);
     
     if (n > 0) {
         session_update_activity(session);
-        
-        /* Parse VT100 sequences and update screen buffer */
-        if (session->screen) {
-            vt100_sequence_t seq;
-            for (ssize_t i = 0; i < n; i++) {
-                if (vt100_parser_feed(&session->parser, buffer[i], &seq)) {
-                    screen_buffer_process_sequence(session->screen, &seq);
-                }
-            }
-        }
     }
     
-    return n;
+    return (ssize_t)n;
 }
 
 bool session_resize(session_t *session, int rows, int cols) {
@@ -480,4 +585,81 @@ int session_get_fd(session_t *session) {
     }
     
     return pty_get_master_fd(session->pty);
+}
+
+
+
+/**
+ * Get available raw PTY output data size
+ * @param session Session
+ * @return Number of bytes available in raw buffer
+ */
+size_t session_get_raw_available(const session_t *session) {
+    if (!session || !session->raw_buffer) {
+        return 0;
+    }
+    return session->raw_available;
+}
+
+/**
+ * Read raw PTY output from circular buffer
+ * @param session Session
+ * @param buffer Output buffer
+ * @param size Maximum bytes to read
+ * @return Number of bytes read
+ */
+size_t session_read_raw_output(session_t *session, char *buffer, size_t size) {
+    if (!session || !session->raw_buffer || !buffer || size == 0) {
+        return 0;
+    }
+    
+    size_t to_read = (size < session->raw_available) ? size : session->raw_available;
+    size_t bytes_read = 0;
+    
+    while (bytes_read < to_read) {
+        buffer[bytes_read] = session->raw_buffer[session->raw_read_pos];
+        session->raw_read_pos = (session->raw_read_pos + 1) % session->raw_buffer_size;
+        bytes_read++;
+    }
+    
+    session->raw_available -= bytes_read;
+    return bytes_read;
+}
+
+/**
+ * Peek at raw PTY output without consuming it
+ * @param session Session
+ * @param buffer Output buffer
+ * @param size Maximum bytes to peek
+ * @return Number of bytes peeked
+ */
+size_t session_peek_raw_output(const session_t *session, char *buffer, size_t size) {
+    if (!session || !session->raw_buffer || !buffer || size == 0) {
+        return 0;
+    }
+    
+    size_t to_read = (size < session->raw_available) ? size : session->raw_available;
+    size_t bytes_read = 0;
+    size_t read_pos = session->raw_read_pos;
+    
+    while (bytes_read < to_read) {
+        buffer[bytes_read] = session->raw_buffer[read_pos];
+        read_pos = (read_pos + 1) % session->raw_buffer_size;
+        bytes_read++;
+    }
+    
+    return bytes_read;
+}
+
+/**
+ * Clear raw PTY output buffer
+ * @param session Session
+ */
+void session_clear_raw_buffer(session_t *session) {
+    if (!session || !session->raw_buffer) {
+        return;
+    }
+    
+    session->raw_read_pos = session->raw_write_pos;
+    session->raw_available = 0;
 }

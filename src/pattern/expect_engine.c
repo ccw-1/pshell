@@ -1,326 +1,370 @@
 #include "pshell/expect_engine.h"
-#include "pshell/pattern_matcher.h"
-#include "pshell/session.h"
+#include "pshell/logger.h"
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 #include <unistd.h>
-#include <sys/select.h>
-#include <sys/time.h>
 #include <errno.h>
+#include <sys/time.h>
 
-#define INITIAL_BUFFER_CAPACITY 4096
-#define READ_CHUNK_SIZE 1024
+#define EXPECT_BUFFER_SIZE 65536
+#define EXPECT_READ_SIZE 4096
 
-expect_engine_t *expect_engine_create(session_t *session, int timeout_ms, bool case_sensitive)
-{
+/* Get current time in milliseconds */
+static long long get_time_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+expect_context_t *expect_context_create(session_t *session, int timeout_ms) {
     if (!session) {
+        log_error("Invalid session");
         return NULL;
     }
-
-    expect_engine_t *engine = calloc(1, sizeof(expect_engine_t));
-    if (!engine) {
-        return NULL;
-    }
-
-    engine->session = session;
-    engine->timeout_ms = timeout_ms;
-    engine->case_sensitive = case_sensitive;
     
-    /* Allocate initial buffer */
-    engine->buffer_capacity = INITIAL_BUFFER_CAPACITY;
-    engine->buffer = malloc(engine->buffer_capacity);
-    if (!engine->buffer) {
-        free(engine);
+    expect_context_t *ctx = calloc(1, sizeof(expect_context_t));
+    if (!ctx) {
+        log_error("Failed to allocate expect context");
         return NULL;
     }
-    engine->buffer[0] = '\0';
-    engine->buffer_size = 0;
-
-    return engine;
-}
-
-void expect_engine_destroy(expect_engine_t *engine)
-{
-    if (!engine) {
-        return;
-    }
-
-    /* Free patterns */
-    for (int i = 0; i < engine->npatterns; i++) {
-        pattern_matcher_destroy(engine->patterns[i]);
-    }
-    free(engine->patterns);
-
-    free(engine->buffer);
-    free(engine);
-}
-
-int expect_engine_add_pattern(expect_engine_t *engine, const char *pattern)
-{
-    if (!engine || !pattern) {
-        return -1;
-    }
-
-    /* Create pattern matcher */
-    pattern_matcher_t *matcher = pattern_matcher_create(pattern, engine->case_sensitive);
-    if (!matcher) {
-        return -1;
-    }
-
-    /* Expand patterns array */
-    pattern_matcher_t **new_patterns = realloc(engine->patterns, 
-                                               (engine->npatterns + 1) * sizeof(pattern_matcher_t *));
-    if (!new_patterns) {
-        pattern_matcher_destroy(matcher);
-        return -1;
-    }
-
-    engine->patterns = new_patterns;
-    engine->patterns[engine->npatterns] = matcher;
-    return engine->npatterns++;
-}
-
-void expect_engine_clear_patterns(expect_engine_t *engine)
-{
-    if (!engine) {
-        return;
-    }
-
-    for (int i = 0; i < engine->npatterns; i++) {
-        pattern_matcher_destroy(engine->patterns[i]);
-    }
-    free(engine->patterns);
     
-    engine->patterns = NULL;
-    engine->npatterns = 0;
+    ctx->session = session;
+    ctx->timeout_ms = timeout_ms;
+    ctx->start_time = time(NULL);
+    
+    /* Allocate buffer */
+    ctx->buffer_size = EXPECT_BUFFER_SIZE;
+    ctx->buffer = malloc(ctx->buffer_size);
+    if (!ctx->buffer) {
+        log_error("Failed to allocate expect buffer");
+        free(ctx);
+        return NULL;
+    }
+    
+    ctx->buffer[0] = '\0';
+    ctx->buffer_used = 0;
+    
+    log_debug("Created expect context: timeout=%dms", timeout_ms);
+    
+    return ctx;
 }
 
-static bool expand_buffer(expect_engine_t *engine, size_t needed)
-{
-    if (engine->buffer_size + needed <= engine->buffer_capacity) {
-        return true;
-    }
+void expect_context_destroy(expect_context_t *ctx) {
+    if (!ctx) return;
+    
+    free(ctx->buffer);
+    free(ctx);
+}
 
-    size_t new_capacity = engine->buffer_capacity * 2;
-    while (new_capacity < engine->buffer_size + needed) {
-        new_capacity *= 2;
-    }
-
-    char *new_buffer = realloc(engine->buffer, new_capacity);
-    if (!new_buffer) {
+bool expect_is_timeout(const expect_context_t *ctx) {
+    if (!ctx || ctx->timeout_ms <= 0) {
         return false;
     }
-
-    engine->buffer = new_buffer;
-    engine->buffer_capacity = new_capacity;
-    return true;
+    
+    long long elapsed = get_time_ms() - (ctx->start_time * 1000);
+    return elapsed >= ctx->timeout_ms;
 }
 
-static expect_result_t read_and_match(expect_engine_t *engine, expect_match_t *match)
-{
-    int fd = session_get_fd(engine->session);
-    if (fd < 0) {
+int expect_get_remaining_timeout(const expect_context_t *ctx) {
+    if (!ctx || ctx->timeout_ms <= 0) {
+        return -1;
+    }
+    
+    long long elapsed = get_time_ms() - (ctx->start_time * 1000);
+    long long remaining = ctx->timeout_ms - elapsed;
+    
+    return remaining > 0 ? (int)remaining : 0;
+}
+
+const char *expect_get_buffer(const expect_context_t *ctx) {
+    return ctx ? ctx->buffer : NULL;
+}
+
+void expect_clear_buffer(expect_context_t *ctx) {
+    if (!ctx) return;
+    
+    ctx->buffer[0] = '\0';
+    ctx->buffer_used = 0;
+}
+
+expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
+                               bool case_sensitive, match_result_t *result) {
+    if (!ctx || !pattern) {
         return EXPECT_ERROR;
     }
-
-    /* Calculate timeout */
-    struct timeval start_time, current_time, timeout_tv;
-    gettimeofday(&start_time, NULL);
     
+    /* Create pattern matcher */
+    pattern_matcher_t *matcher = pattern_matcher_create(pattern, case_sensitive);
+    if (!matcher) {
+        log_error("Failed to create pattern matcher");
+        return EXPECT_ERROR;
+    }
+    
+    /* Read and match loop */
     while (1) {
-        /* Check for pattern match in current buffer */
-        for (int i = 0; i < engine->npatterns; i++) {
-            match_result_t result;
-            if (pattern_matcher_match(engine->patterns[i], engine->buffer, &result)) {
-                /* Pattern matched! */
-                match->result = EXPECT_MATCHED;
-                match->pattern_index = i;
-                match->match_start = result.start;
-                match->match_end = result.end;
-                match->matched_text = result.matched_text;
-                result.matched_text = NULL; /* Transfer ownership */
-
-                /* Extract before/after text */
-                match->before = strndup(engine->buffer, result.start);
-                match->after = strdup(engine->buffer + result.end);
-
-                /* Extract submatches */
-                match->nmatch = result.nmatch;
-                if (result.nmatch > 0) {
-                    match->submatches = calloc(result.nmatch, sizeof(char *));
-                    for (int j = 0; j < result.nmatch; j++) {
-                        match->submatches[j] = match_result_get_submatch(engine->buffer, &result, j);
-                    }
-                }
-
-                match_result_free(&result);
-                return EXPECT_MATCHED;
-            }
-            match_result_free(&result);
-        }
-
-        /* Calculate remaining timeout */
-        if (engine->timeout_ms > 0) {
-            gettimeofday(&current_time, NULL);
-            long elapsed_ms = (current_time.tv_sec - start_time.tv_sec) * 1000 +
-                            (current_time.tv_usec - start_time.tv_usec) / 1000;
-            
-            if (elapsed_ms >= engine->timeout_ms) {
-                match->result = EXPECT_TIMEOUT;
-                return EXPECT_TIMEOUT;
-            }
-
-            long remaining_ms = engine->timeout_ms - elapsed_ms;
-            timeout_tv.tv_sec = remaining_ms / 1000;
-            timeout_tv.tv_usec = (remaining_ms % 1000) * 1000;
-        }
-
-        /* Wait for data */
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(fd, &readfds);
-
-        int ret = select(fd + 1, &readfds, NULL, NULL, 
-                        engine->timeout_ms > 0 ? &timeout_tv : NULL);
-        
-        if (ret < 0) {
-            if (errno == EINTR) {
-                continue; /* Interrupted, retry */
-            }
-            match->result = EXPECT_ERROR;
-            return EXPECT_ERROR;
-        }
-
-        if (ret == 0) {
-            /* Timeout */
-            match->result = EXPECT_TIMEOUT;
+        /* Check timeout */
+        if (expect_is_timeout(ctx)) {
+            pattern_matcher_destroy(matcher);
+            log_debug("Expect timeout reached");
             return EXPECT_TIMEOUT;
         }
-
-        /* Read available data */
-        char chunk[READ_CHUNK_SIZE];
-        ssize_t nread = read(fd, chunk, sizeof(chunk) - 1);
         
-        if (nread < 0) {
+        /* Try to match current buffer */
+        match_result_t match;
+        if (pattern_matcher_match(matcher, ctx->buffer, &match)) {
+            pattern_matcher_destroy(matcher);
+            
+            if (result) {
+                *result = match;
+            } else {
+                match_result_free(&match);
+            }
+            
+            log_debug("Pattern matched: '%s'", pattern);
+            return EXPECT_MATCHED;
+        }
+        
+        /* Read more output */
+        char read_buf[EXPECT_READ_SIZE];
+        ssize_t n = session_read_output(ctx->session, read_buf, sizeof(read_buf) - 1);
+        
+        if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* No data available, sleep briefly */
+                usleep(10000);  /* 10ms */
                 continue;
             }
-            match->result = EXPECT_ERROR;
+            
+            /* Error reading */
+            pattern_matcher_destroy(matcher);
+            log_error("Error reading session output: %s", strerror(errno));
             return EXPECT_ERROR;
         }
-
-        if (nread == 0) {
-            /* EOF */
-            match->result = EXPECT_EOF;
-            return EXPECT_EOF;
+        
+        if (n == 0) {
+            /* Check if session is still alive */
+            if (!session_is_alive(ctx->session)) {
+                pattern_matcher_destroy(matcher);
+                log_debug("Session closed (EOF)");
+                return EXPECT_EOF;
+            }
+            
+            /* No data but session alive, sleep briefly */
+            usleep(10000);  /* 10ms */
+            continue;
         }
-
+        
         /* Append to buffer */
-        if (!expand_buffer(engine, nread + 1)) {
-            match->result = EXPECT_ERROR;
-            return EXPECT_ERROR;
+        read_buf[n] = '\0';
+        
+        if (ctx->buffer_used + n >= ctx->buffer_size) {
+            /* Buffer full, shift or expand */
+            if (ctx->buffer_used > ctx->buffer_size / 2) {
+                /* Shift buffer to make room */
+                size_t shift = ctx->buffer_size / 4;
+                memmove(ctx->buffer, ctx->buffer + shift, ctx->buffer_used - shift);
+                ctx->buffer_used -= shift;
+            } else {
+                /* Expand buffer */
+                size_t new_size = ctx->buffer_size * 2;
+                char *new_buffer = realloc(ctx->buffer, new_size);
+                if (!new_buffer) {
+                    pattern_matcher_destroy(matcher);
+                    log_error("Failed to expand expect buffer");
+                    return EXPECT_ERROR;
+                }
+                ctx->buffer = new_buffer;
+                ctx->buffer_size = new_size;
+            }
         }
-
-        memcpy(engine->buffer + engine->buffer_size, chunk, nread);
-        engine->buffer_size += nread;
-        engine->buffer[engine->buffer_size] = '\0';
+        
+        memcpy(ctx->buffer + ctx->buffer_used, read_buf, n);
+        ctx->buffer_used += n;
+        ctx->buffer[ctx->buffer_used] = '\0';
     }
 }
 
-expect_result_t expect_engine_wait(expect_engine_t *engine, expect_match_t *match)
-{
-    if (!engine || !match) {
+expect_result_t expect_any(expect_context_t *ctx, const char **patterns,
+                           int num_patterns, bool case_sensitive,
+                           int *matched_index, match_result_t *result) {
+    if (!ctx || !patterns || num_patterns <= 0) {
         return EXPECT_ERROR;
     }
-
-    /* Initialize match */
-    memset(match, 0, sizeof(expect_match_t));
-    match->pattern_index = -1;
-
-    if (engine->npatterns == 0) {
-        match->result = EXPECT_ERROR;
+    
+    /* Create pattern matchers */
+    pattern_matcher_t **matchers = calloc(num_patterns, sizeof(pattern_matcher_t*));
+    if (!matchers) {
+        log_error("Failed to allocate matchers array");
         return EXPECT_ERROR;
     }
-
-    return read_and_match(engine, match);
-}
-
-expect_result_t expect_engine_wait_patterns(expect_engine_t *engine, 
-                                           const char **patterns, int npatterns,
-                                           expect_match_t *match)
-{
-    if (!engine || !patterns || npatterns <= 0 || !match) {
-        return EXPECT_ERROR;
-    }
-
-    /* Save current patterns */
-    pattern_matcher_t **saved_patterns = engine->patterns;
-    int saved_npatterns = engine->npatterns;
-
-    /* Set temporary patterns */
-    engine->patterns = NULL;
-    engine->npatterns = 0;
-
-    for (int i = 0; i < npatterns; i++) {
-        if (expect_engine_add_pattern(engine, patterns[i]) < 0) {
-            /* Restore and fail */
-            expect_engine_clear_patterns(engine);
-            engine->patterns = saved_patterns;
-            engine->npatterns = saved_npatterns;
+    
+    for (int i = 0; i < num_patterns; i++) {
+        matchers[i] = pattern_matcher_create(patterns[i], case_sensitive);
+        if (!matchers[i]) {
+            /* Cleanup on error */
+            for (int j = 0; j < i; j++) {
+                pattern_matcher_destroy(matchers[j]);
+            }
+            free(matchers);
             return EXPECT_ERROR;
         }
     }
+    
+    /* Read and match loop */
+    expect_result_t res = EXPECT_ERROR;
+    
+    while (1) {
+        /* Check timeout */
+        if (expect_is_timeout(ctx)) {
+            res = EXPECT_TIMEOUT;
+            break;
+        }
+        
+        /* Try to match current buffer with any pattern */
+        for (int i = 0; i < num_patterns; i++) {
+            match_result_t match;
+            if (pattern_matcher_match(matchers[i], ctx->buffer, &match)) {
+                if (matched_index) {
+                    *matched_index = i;
+                }
+                
+                if (result) {
+                    *result = match;
+                } else {
+                    match_result_free(&match);
+                }
+                
+                log_debug("Pattern %d matched: '%s'", i, patterns[i]);
+                res = EXPECT_MATCHED;
+                goto cleanup;
+            }
+        }
+        
+        /* Read more output */
+        char read_buf[EXPECT_READ_SIZE];
+        ssize_t n = session_read_output(ctx->session, read_buf, sizeof(read_buf) - 1);
+        
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(10000);
+                continue;
+            }
+            
+            res = EXPECT_ERROR;
+            break;
+        }
+        
+        if (n == 0) {
+            if (!session_is_alive(ctx->session)) {
+                res = EXPECT_EOF;
+                break;
+            }
+            
+            usleep(10000);
+            continue;
+        }
+        
+        /* Append to buffer */
+        read_buf[n] = '\0';
+        
+        if (ctx->buffer_used + n >= ctx->buffer_size) {
+            if (ctx->buffer_used > ctx->buffer_size / 2) {
+                size_t shift = ctx->buffer_size / 4;
+                memmove(ctx->buffer, ctx->buffer + shift, ctx->buffer_used - shift);
+                ctx->buffer_used -= shift;
+            } else {
+                size_t new_size = ctx->buffer_size * 2;
+                char *new_buffer = realloc(ctx->buffer, new_size);
+                if (!new_buffer) {
+                    res = EXPECT_ERROR;
+                    break;
+                }
+                ctx->buffer = new_buffer;
+                ctx->buffer_size = new_size;
+            }
+        }
+        
+        memcpy(ctx->buffer + ctx->buffer_used, read_buf, n);
+        ctx->buffer_used += n;
+        ctx->buffer[ctx->buffer_used] = '\0';
+    }
+    
+cleanup:
+    /* Cleanup matchers */
+    for (int i = 0; i < num_patterns; i++) {
+        pattern_matcher_destroy(matchers[i]);
+    }
+    free(matchers);
+    
+    return res;
+}
 
-    /* Wait for match */
-    expect_result_t result = expect_engine_wait(engine, match);
-
-    /* Restore original patterns */
-    expect_engine_clear_patterns(engine);
-    engine->patterns = saved_patterns;
-    engine->npatterns = saved_npatterns;
-
+expect_result_t expect_string(expect_context_t *ctx, const char *str,
+                              bool case_sensitive) {
+    if (!ctx || !str) {
+        return EXPECT_ERROR;
+    }
+    
+    /* Escape special regex characters and create pattern */
+    size_t len = strlen(str);
+    char *pattern = malloc(len * 2 + 1);
+    if (!pattern) {
+        return EXPECT_ERROR;
+    }
+    
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        char ch = str[i];
+        /* Escape regex special characters */
+        if (strchr(".*+?[]{}()^$|\\", ch)) {
+            pattern[j++] = '\\';
+        }
+        pattern[j++] = ch;
+    }
+    pattern[j] = '\0';
+    
+    expect_result_t result = expect_pattern(ctx, pattern, case_sensitive, NULL);
+    
+    free(pattern);
     return result;
 }
 
-void expect_engine_set_timeout(expect_engine_t *engine, int timeout_ms)
-{
-    if (engine) {
-        engine->timeout_ms = timeout_ms;
+expect_result_t expect_send_and_wait(session_t *session, const char *send_text,
+                                     const char *pattern, int timeout_ms,
+                                     match_result_t *result) {
+    if (!session || !pattern) {
+        return EXPECT_ERROR;
     }
-}
-
-const char *expect_engine_get_buffer(expect_engine_t *engine)
-{
-    return engine ? engine->buffer : NULL;
-}
-
-void expect_engine_clear_buffer(expect_engine_t *engine)
-{
-    if (engine) {
-        engine->buffer_size = 0;
-        if (engine->buffer) {
-            engine->buffer[0] = '\0';
+    
+    /* Send text if provided */
+    if (send_text) {
+        ssize_t written = session_send_input(session, send_text, strlen(send_text));
+        if (written < 0) {
+            log_error("Failed to send input");
+            return EXPECT_ERROR;
         }
     }
+    
+    /* Create expect context */
+    expect_context_t *ctx = expect_context_create(session, timeout_ms);
+    if (!ctx) {
+        return EXPECT_ERROR;
+    }
+    
+    /* Wait for pattern */
+    expect_result_t res = expect_pattern(ctx, pattern, true, result);
+    
+    expect_context_destroy(ctx);
+    
+    return res;
 }
 
-void expect_match_free(expect_match_t *match)
-{
-    if (!match) {
-        return;
+const char *expect_result_name(expect_result_t result) {
+    switch (result) {
+        case EXPECT_MATCHED: return "MATCHED";
+        case EXPECT_TIMEOUT: return "TIMEOUT";
+        case EXPECT_EOF: return "EOF";
+        case EXPECT_ERROR: return "ERROR";
+        default: return "UNKNOWN";
     }
-
-    free(match->matched_text);
-    free(match->before);
-    free(match->after);
-
-    if (match->submatches) {
-        for (int i = 0; i < match->nmatch; i++) {
-            free(match->submatches[i]);
-        }
-        free(match->submatches);
-    }
-
-    memset(match, 0, sizeof(expect_match_t));
 }

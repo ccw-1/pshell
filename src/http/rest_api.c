@@ -25,6 +25,7 @@ static void handle_expect_pattern(http_request_t *req, http_response_t *resp, vo
 static void handle_resize_terminal(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_get_output(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_get_screen(http_request_t *req, http_response_t *resp, void *user_data);
+static void handle_get_raw(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_status(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_health(http_request_t *req, http_response_t *resp, void *user_data);
 
@@ -128,6 +129,8 @@ bool rest_api_register_routes(rest_api_t *api) {
                                "/api/sessions/:id/output", handle_get_output, api);
     http_server_register_route(api->server, HTTP_METHOD_GET,
                                "/api/sessions/:id/screen", handle_get_screen, api);
+    http_server_register_route(api->server, HTTP_METHOD_GET,
+                               "/api/sessions/:id/raw", handle_get_raw, api);
     
     /* System */
     http_server_register_route(api->server, HTTP_METHOD_GET,
@@ -411,68 +414,61 @@ static void handle_expect_pattern(http_request_t *req, http_response_t *resp, vo
         return;
     }
     
-    /* Create expect engine */
-    expect_engine_t *engine = expect_engine_create(session, timeout, case_sensitive);
-    if (!engine) {
+    /* Create expect context */
+    expect_context_t *ctx = expect_context_create(session, timeout);
+    if (!ctx) {
         json_free(json);
         free(session_id);
-        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to create expect engine");
-        return;
-    }
-    
-    /* Add pattern */
-    if (expect_engine_add_pattern(engine, pattern) < 0) {
-        expect_engine_destroy(engine);
-        json_free(json);
-        free(session_id);
-        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid pattern");
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to create expect context");
         return;
     }
     
     /* Wait for pattern match */
-    expect_match_t match;
-    expect_result_t result = expect_engine_wait(engine, &match);
+    match_result_t match;
+    expect_result_t result = expect_pattern(ctx, pattern, case_sensitive, &match);
     
     /* Build response */
     char response[4096];
     if (result == EXPECT_MATCHED) {
-        /* Build submatches array */
-        char submatches_json[2048] = "[";
-        for (int i = 0; i < match.nmatch && i < 10; i++) {
-            if (i > 0) strcat(submatches_json, ",");
-            if (match.submatches[i]) {
-                strcat(submatches_json, "\"");
-                /* TODO: Escape JSON string properly */
-                strncat(submatches_json, match.submatches[i], 200);
-                strcat(submatches_json, "\"");
-            } else {
-                strcat(submatches_json, "null");
+        /* Escape matched text for JSON */
+        char escaped_text[1024] = {0};
+        if (match.matched_text) {
+            const char *src = match.matched_text;
+            char *dst = escaped_text;
+            size_t remaining = sizeof(escaped_text) - 1;
+            
+            while (*src && remaining > 1) {
+                if (*src == '"' || *src == '\\') {
+                    if (remaining > 2) {
+                        *dst++ = '\\';
+                        remaining--;
+                    }
+                }
+                *dst++ = *src++;
+                remaining--;
             }
+            *dst = '\0';
         }
-        strcat(submatches_json, "]");
         
         snprintf(response, sizeof(response),
-                 "{\"matched\":true,\"pattern_index\":%d,\"matched_text\":\"%s\",\"before\":\"%s\",\"after\":\"%s\",\"submatches\":%s}",
-                 match.pattern_index,
-                 match.matched_text ? match.matched_text : "",
-                 match.before ? match.before : "",
-                 match.after ? match.after : "",
-                 submatches_json);
+                "{\"status\":\"matched\",\"matched_text\":\"%s\",\"start\":%zu,\"end\":%zu}",
+                escaped_text, match.start, match.end);
+        
+        match_result_free(&match);
     } else if (result == EXPECT_TIMEOUT) {
         snprintf(response, sizeof(response),
-                 "{\"matched\":false,\"result\":\"timeout\",\"timeout\":%d}", timeout);
+                "{\"status\":\"timeout\",\"timeout\":%d}", timeout);
     } else if (result == EXPECT_EOF) {
         snprintf(response, sizeof(response),
-                 "{\"matched\":false,\"result\":\"eof\"}");
+                "{\"status\":\"eof\"}");
     } else {
         snprintf(response, sizeof(response),
-                 "{\"matched\":false,\"result\":\"error\"}");
+                "{\"status\":\"error\"}");
     }
     
-    log_debug("Expect pattern in session %s: result=%d", session_id, result);
+    log_debug("Expect pattern in session %s: result=%s", session_id, expect_result_name(result));
     
-    expect_match_free(&match);
-    expect_engine_destroy(engine);
+    expect_context_destroy(ctx);
     json_free(json);
     free(session_id);
     
@@ -565,9 +561,9 @@ static void handle_get_output(http_request_t *req, http_response_t *resp, void *
         return;
     }
     
-    /* Read output from session */
+    /* Read NEW output from session (raw buffer, consumed on read) */
     char buffer[4096];
-    ssize_t n = session_read_output(session, buffer, sizeof(buffer) - 1);
+    ssize_t n = session_read_raw_output(session, buffer, sizeof(buffer) - 1);
     
     if (n < 0) {
         free(session_id);
@@ -577,11 +573,24 @@ static void handle_get_output(http_request_t *req, http_response_t *resp, void *
     
     buffer[n] = '\0';
     
+    /* Convert LF to CRLF for web terminal (xterm.js expects CRLF) */
+    char converted[8192];
+    size_t conv_len = 0;
+    for (ssize_t i = 0; i < n && conv_len < sizeof(converted) - 2; i++) {
+        if (buffer[i] == '\n' && (i == 0 || buffer[i-1] != '\r')) {
+            /* LF without preceding CR - add CR */
+            converted[conv_len++] = '\r';
+            converted[conv_len++] = '\n';
+        } else {
+            converted[conv_len++] = buffer[i];
+        }
+    }
+    
     /* Escape output for JSON */
     char escaped[8192];
     size_t j = 0;
-    for (ssize_t i = 0; i < n && j < sizeof(escaped) - 2; i++) {
-        switch (buffer[i]) {
+    for (size_t i = 0; i < conv_len && j < sizeof(escaped) - 2; i++) {
+        switch (converted[i]) {
             case '"':  escaped[j++] = '\\'; escaped[j++] = '"'; break;
             case '\\': escaped[j++] = '\\'; escaped[j++] = '\\'; break;
             case '\n': escaped[j++] = '\\'; escaped[j++] = 'n'; break;
@@ -672,11 +681,35 @@ static void handle_get_screen(http_request_t *req, http_response_t *resp, void *
     int cursor_row, cursor_col;
     session_get_cursor_position(session, &cursor_row, &cursor_col);
     
+    /* Escape screen text for JSON */
+    char escaped[16384];
+    size_t j = 0;
+    for (size_t i = 0; i < text_len && j < sizeof(escaped) - 2; i++) {
+        switch (screen_text[i]) {
+            case '"':  escaped[j++] = '\\'; escaped[j++] = '"'; break;
+            case '\\': escaped[j++] = '\\'; escaped[j++] = '\\'; break;
+            case '\n': escaped[j++] = '\\'; escaped[j++] = 'n'; break;
+            case '\r': escaped[j++] = '\\'; escaped[j++] = 'r'; break;
+            case '\t': escaped[j++] = '\\'; escaped[j++] = 't'; break;
+            case '\b': escaped[j++] = '\\'; escaped[j++] = 'b'; break;
+            case '\f': escaped[j++] = '\\'; escaped[j++] = 'f'; break;
+            default:
+                if ((unsigned char)screen_text[i] < 32) {
+                    /* Control character - escape as unicode */
+                    j += snprintf(escaped + j, sizeof(escaped) - j, "\\u%04x", (unsigned char)screen_text[i]);
+                } else {
+                    escaped[j++] = screen_text[i];
+                }
+                break;
+        }
+    }
+    escaped[j] = '\0';
+    
     /* Build JSON response */
-    char response[16384];
+    char response[32768];
     int len = snprintf(response, sizeof(response),
                       "{\"text\":\"%s\",\"cursor_row\":%d,\"cursor_col\":%d,\"bytes\":%d}",
-                      screen_text, cursor_row, cursor_col, (int)text_len);
+                      escaped, cursor_row, cursor_col, (int)text_len);
     
     if (len > 0 && len < (int)sizeof(response)) {
         http_response_send_json(resp, HTTP_STATUS_OK, response);
@@ -685,5 +718,127 @@ static void handle_get_screen(http_request_t *req, http_response_t *resp, void *
     }
     
     log_debug("Get screen from session: %s (cursor: %d,%d)", session_id, cursor_row, cursor_col);
+    free(session_id);
+}
+
+static void handle_get_raw(http_request_t *req, http_response_t *resp, void *user_data) {
+    rest_api_t *api = (rest_api_t*)user_data;
+    
+    if (!check_auth(api, req, resp)) return;
+    
+    char *session_id = extract_session_id(http_request_get_path(req));
+    if (!session_id) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid session ID");
+        return;
+    }
+    
+    /* Get session */
+    session_t *session = session_manager_get(api->session_mgr, session_id);
+    if (!session) {
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_NOT_FOUND, "Session not found");
+        return;
+    }
+    
+    /* Check query parameters */
+    bool peek_mode = false;
+    bool clear_after = false;
+    
+    const char *peek_param = http_request_get_query(req, "peek");
+    if (peek_param && (strcmp(peek_param, "true") == 0 || strcmp(peek_param, "1") == 0)) {
+        peek_mode = true;
+    }
+    
+    const char *clear_param = http_request_get_query(req, "clear");
+    if (clear_param && (strcmp(clear_param, "true") == 0 || strcmp(clear_param, "1") == 0)) {
+        clear_after = true;
+    }
+    
+    /* Get available data size */
+    size_t available = session_get_raw_available(session);
+    
+    /* Allocate buffer for raw data */
+    size_t max_size = 65536;  /* 64KB max per request */
+    size_t read_size = (available < max_size) ? available : max_size;
+    char *raw_data = malloc(read_size + 1);
+    if (!raw_data) {
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Memory allocation failed");
+        return;
+    }
+    
+    /* Read or peek raw data */
+    size_t bytes_read;
+    if (peek_mode) {
+        bytes_read = session_peek_raw_output(session, raw_data, read_size);
+    } else {
+        bytes_read = session_read_raw_output(session, raw_data, read_size);
+    }
+    raw_data[bytes_read] = '\0';
+    
+    /* Clear buffer if requested */
+    if (clear_after && !peek_mode) {
+        session_clear_raw_buffer(session);
+    }
+    
+    /* Escape raw data for JSON */
+    size_t escaped_size = bytes_read * 6 + 1;  /* Worst case: all chars need \uXXXX */
+    char *escaped = malloc(escaped_size);
+    if (!escaped) {
+        free(raw_data);
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Memory allocation failed");
+        return;
+    }
+    
+    size_t j = 0;
+    for (size_t i = 0; i < bytes_read && j < escaped_size - 6; i++) {
+        switch (raw_data[i]) {
+            case '"':  escaped[j++] = '\\'; escaped[j++] = '"'; break;
+            case '\\': escaped[j++] = '\\'; escaped[j++] = '\\'; break;
+            case '\n': escaped[j++] = '\\'; escaped[j++] = 'n'; break;
+            case '\r': escaped[j++] = '\\'; escaped[j++] = 'r'; break;
+            case '\t': escaped[j++] = '\\'; escaped[j++] = 't'; break;
+            case '\b': escaped[j++] = '\\'; escaped[j++] = 'b'; break;
+            case '\f': escaped[j++] = '\\'; escaped[j++] = 'f'; break;
+            default:
+                if ((unsigned char)raw_data[i] < 32 || (unsigned char)raw_data[i] == 127) {
+                    /* Control character - escape as unicode */
+                    j += snprintf(escaped + j, escaped_size - j, "\\u%04x", (unsigned char)raw_data[i]);
+                } else {
+                    escaped[j++] = raw_data[i];
+                }
+                break;
+        }
+    }
+    escaped[j] = '\0';
+    
+    /* Build JSON response */
+    size_t response_size = j + 256;
+    char *response = malloc(response_size);
+    if (!response) {
+        free(escaped);
+        free(raw_data);
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Memory allocation failed");
+        return;
+    }
+    
+    int len = snprintf(response, response_size,
+                      "{\"data\":\"%s\",\"bytes\":%zu,\"available\":%zu,\"peek\":%s}",
+                      escaped, bytes_read, available, peek_mode ? "true" : "false");
+    
+    if (len > 0 && len < (int)response_size) {
+        http_response_send_json(resp, HTTP_STATUS_OK, response);
+    } else {
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to build response");
+    }
+    
+    log_debug("Get raw output from session: %s (bytes: %zu, available: %zu, peek: %d)", 
+              session_id, bytes_read, available, peek_mode);
+    
+    free(response);
+    free(escaped);
+    free(raw_data);
     free(session_id);
 }

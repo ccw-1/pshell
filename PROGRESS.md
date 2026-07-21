@@ -1,10 +1,10 @@
 # pshell Implementation Progress
 
-## Current Status: Phase 10 Complete ✅ + Security Enhancements
+## Current Status: Phase 7 Complete ✅
 
-**Last Updated**: 2026-07-18
+**Last Updated**: 2026-07-20
 **Build Status**: ✅ All binaries compile successfully (pshell, pshell-client, pshellctl)
-**Test Status**: ✅ All unit tests pass (9/9 terminal emulation + 6/6 pattern matching tests)
+**Test Status**: ✅ All unit tests pass (9/9 terminal emulation + 8/8 pattern matching tests)
 **Integration Status**: ✅ Socket control utility (pshellctl) fully functional
 **Security**: ✅ Privilege separation implemented for session spawning
 **Usability**: ✅ Configurable default shell with optional command parameter
@@ -164,40 +164,51 @@ curl http://127.0.0.1:8080/api/sessions/$ID/screen
 **Verified Working**:
 ```bash
 # Pattern matching unit tests
-$ ./tests/test_pattern
-Running pattern matching tests...
+$ make test
+Running bin/tests/test_pattern...
+=== Pattern Matching Tests ===
 
-✓ Pattern validation tests passed
-✓ Basic matching tests passed
-✓ Capture group tests passed
-✓ Match offset tests passed
-✓ Timeout manager tests passed
-✓ No match tests passed
+Running test: pattern_validation... PASSED
+Running test: basic_matching... PASSED
+Running test: case_insensitive... PASSED
+Running test: regex_patterns... PASSED
+Running test: capture_groups... PASSED
+Running test: match_offset... PASSED
+Running test: expect_result_names... PASSED
+Running test: complex_patterns... PASSED
 
-✓ All pattern matching tests passed!
+=== Test Summary ===
+Tests run: 8
+Tests passed: 8
+Tests failed: 0
+
+All tests PASSED!
 ```
 
 **Implementation Details**:
-- **Pattern Matcher**: POSIX regex-based pattern matching with case-sensitive/insensitive support
-  - Supports extended regex syntax
+- **Pattern Matcher** (`pattern_matcher.h/c`): POSIX regex-based pattern matching
+  - Supports extended regex syntax (REG_EXTENDED)
+  - Case-sensitive and case-insensitive matching
   - Capture group extraction (up to 10 groups)
   - Match offset support for incremental searching
-  - Pattern validation with error reporting
-- **Expect Engine**: Monitors session output and matches against patterns
-  - Multiple pattern support
-  - Configurable timeout (milliseconds)
-  - Returns matched text, before/after context, and submatches
-  - Handles EOF and error conditions
-  - Buffer accumulation with dynamic expansion
-- **Timeout Manager**: Precise timeout tracking
-  - Millisecond precision
-  - Elapsed time calculation
-  - Remaining time queries
-  - Timeout reset support
+  - Pattern validation with detailed error messages
+  - Submatch text extraction helper
+- **Expect Engine** (`expect_engine.h/c`): Monitors session output for patterns
+  - Single pattern matching with `expect_pattern()`
+  - Multiple pattern matching with `expect_any()`
+  - Exact string matching with `expect_string()`
+  - Configurable timeout (milliseconds, 0 = no timeout)
+  - Returns matched text with start/end positions
+  - Handles TIMEOUT, EOF, and ERROR conditions
+  - Buffer accumulation with dynamic expansion (starts 64KB)
+  - Non-blocking reads with 10ms sleep intervals
+  - Convenience function `expect_send_and_wait()`
 - **POST /api/sessions/:id/expect**: Wait for pattern in session output
-  - Accepts pattern (regex), timeout (ms), case_sensitive (bool)
-  - Returns match result with full context and submatches
-  - Handles timeout, EOF, and error cases
+  - Accepts pattern (regex), timeout (ms, default 30000), case_sensitive (bool, default true)
+  - Returns JSON with status (matched/timeout/eof/error)
+  - On match: includes matched_text, start, end positions
+  - Properly escapes JSON special characters in output
+  - Integrated with session manager
 
 **API Example**:
 ```bash
@@ -205,13 +216,19 @@ Running pattern matching tests...
 curl -X POST http://127.0.0.1:8080/api/sessions/$ID/expect \
   -H "Content-Type: application/json" \
   -d '{"pattern":"\\$\\s*$","timeout":5000,"case_sensitive":true}'
-# Response: {"matched":true,"pattern_index":0,"matched_text":"$ ","before":"...","after":"","submatches":["$ "]}
+# Response: {"status":"matched","matched_text":"$ ","start":123,"end":125}
 
-# Wait for command output with capture groups
+# Wait for command output (timeout example)
 curl -X POST http://127.0.0.1:8080/api/sessions/$ID/expect \
   -H "Content-Type: application/json" \
-  -d '{"pattern":"Port:\\s*([0-9]+)","timeout":10000}'
-# Response: {"matched":true,"pattern_index":0,"matched_text":"Port: 8080","submatches":["Port: 8080","8080"]}
+  -d '{"pattern":"NEVER_APPEARS","timeout":2000}'
+# Response: {"status":"timeout","timeout":2000}
+
+# Wait for pattern (case insensitive)
+curl -X POST http://127.0.0.1:8080/api/sessions/$ID/expect \
+  -H "Content-Type: application/json" \
+  -d '{"pattern":"error","timeout":10000,"case_sensitive":false}'
+# Response: {"status":"matched","matched_text":"Error","start":45,"end":50}
 ```
 
 ### ✅ Phase 8: Web Interface (Week 11) - COMPLETE
@@ -470,6 +487,31 @@ Status: healthy
   - Resource cleanup
   - UUID-based session IDs
 
+### Phase 5 Files (Terminal Emulation)
+**Headers (include/pshell/)**:
+- `vt100_parser.h` - VT100 escape sequence parser API
+- `screen_buffer.h` - Screen buffer management API
+
+**Source Files**:
+- `src/terminal/vt100_parser.c` - VT100 parser implementation (~300 lines)
+- `src/terminal/screen_buffer.c` - Screen buffer implementation (~600 lines)
+
+**Test Files**:
+- `tests/unit/test_terminal.c` - Terminal emulation unit tests (9 tests)
+
+### Phase 7 Files (Pattern Matching)
+**Headers (include/pshell/)**:
+- `pattern_matcher.h` - POSIX regex pattern matching API
+- `expect_engine.h` - Expect engine for automation API
+
+**Source Files**:
+- `src/pattern/pattern_matcher.c` - Pattern matcher implementation (~200 lines)
+- `src/pattern/expect_engine.c` - Expect engine implementation (~360 lines)
+- `src/utils/shell_utils.c` - Shell utility functions
+
+**Test Files**:
+- `tests/unit/test_pattern.c` - Pattern matching unit tests (8 tests)
+
 ### Placeholder Files
 - `src/cli/pshell_client.c` - HTTP client (placeholder)
 - `src/ctl/pshellctl.c` - Socket control (placeholder)
@@ -605,13 +647,16 @@ To be tested:
 
 ## Code Statistics
 
-- **Total Lines**: ~6000 lines of C code
+- **Total Lines**: ~7500 lines of C code
 - **Phase 1**: ~2000 lines (core infrastructure)
 - **Phase 2**: ~1500 lines (HTTP server + REST API)
 - **Phase 3**: ~250 lines (Unix socket server)
 - **Phase 4**: ~600 lines (session management)
-- **Headers**: ~1650 lines (API definitions)
-- **Remaining**: ~40% of planned implementation
+- **Phase 5**: ~900 lines (terminal emulation)
+- **Phase 7**: ~600 lines (pattern matching + expect engine)
+- **Headers**: ~2000 lines (API definitions)
+- **Tests**: ~650 lines (unit tests)
+- **Remaining**: ~30% of planned implementation
 
 ## Architecture Highlights
 

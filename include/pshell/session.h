@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <sys/types.h>
 #include <time.h>
+#include "io_multiplexer.h"
 
 /**
  * Session management for pshell
@@ -37,9 +38,10 @@ typedef struct {
 /**
  * Create session manager
  * @param max_sessions Maximum number of concurrent sessions
+ * @param mux I/O multiplexer for monitoring session PTY file descriptors
  * @return Manager instance or NULL on error
  */
-session_manager_t* session_manager_create(int max_sessions);
+session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mux);
 
 /**
  * Destroy session manager
@@ -216,6 +218,38 @@ size_t session_get_screen_line(const session_t *session, int row, char *buffer, 
  * @param row Output row (0-based)
  * @param col Output column (0-based)
  */
+
+/**
+ * Get available raw PTY output data size
+ * @param session Session
+ * @return Number of bytes available in raw buffer
+ */
+size_t session_get_raw_available(const session_t *session);
+
+/**
+ * Read raw PTY output from circular buffer (consumes data)
+ * @param session Session
+ * @param buffer Output buffer
+ * @param size Maximum bytes to read
+ * @return Number of bytes read
+ */
+size_t session_read_raw_output(session_t *session, char *buffer, size_t size);
+
+/**
+ * Peek at raw PTY output without consuming it
+ * @param session Session
+ * @param buffer Output buffer
+ * @param size Maximum bytes to peek
+ * @return Number of bytes peeked
+ */
+size_t session_peek_raw_output(const session_t *session, char *buffer, size_t size);
+
+/**
+ * Clear raw PTY output buffer
+ * @param session Session
+ */
+void session_clear_raw_buffer(session_t *session);
+
 void session_get_cursor_position(const session_t *session, int *row, int *col);
 
 #endif /* PSHELL_SESSION_H */

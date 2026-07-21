@@ -374,7 +374,7 @@ int main(int argc, char **argv) {
     int max_sessions = config_get_int(g_config, "sessions", "max_sessions", 50);
     fprintf(stderr, "DEBUG: max_sessions=%d, creating session manager\n", max_sessions);
     fflush(stderr);
-    g_session_mgr = session_manager_create(max_sessions);
+    g_session_mgr = session_manager_create(max_sessions, g_mux);
     fprintf(stderr, "DEBUG: Session manager created: %p\n", (void*)g_session_mgr);
     fflush(stderr);
     if (!g_session_mgr) {

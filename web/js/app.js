@@ -281,8 +281,12 @@ class PShellApp {
                     console.log('Received output:', JSON.stringify(response.output.substring(0, 100)), 
                                 'length:', response.output.length,
                                 'charCodes:', Array.from(response.output.substring(0, 20)).map(c => c.charCodeAt(0)));
-                    // Write directly to xterm.js - it handles all escape sequences
-                    this.terminal.write(response.output);
+                    
+                    // xterm.js needs CRLF for proper line breaks
+                    // Simply replace all LF with CRLF (screen buffer handles cursor positioning)
+                    let output = response.output.replace(/\n/g, '\r\n');
+                    
+                    this.terminal.write(output);
                 }
             } catch (error) {
                 console.error('Failed to read output:', error);

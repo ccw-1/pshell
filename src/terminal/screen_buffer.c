@@ -443,6 +443,8 @@ void screen_buffer_restore_cursor(screen_buffer_t *screen) {
 }
 
 void screen_buffer_newline(screen_buffer_t *screen) {
+    /* Newline in terminal emulation means CR+LF (move down AND return to column 0) */
+    screen->cursor.col = 0;
     screen->cursor.row++;
     if (screen->cursor.row > screen->scroll_bottom) {
         screen_buffer_scroll_up(screen, 1);
@@ -600,10 +602,21 @@ size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_
     
     size_t pos = 0;
     for (int r = 0; r < screen->rows && pos < size - 1; r++) {
-        for (int c = 0; c < screen->cols && pos < size - 1; c++) {
+        /* Find last non-space character in this row */
+        int last_col = screen->cols - 1;
+        while (last_col >= 0) {
+            const char_cell_t *cell = &screen->cells[r * screen->cols + last_col];
+            if (cell->ch != ' ') break;
+            last_col--;
+        }
+        
+        /* Copy characters up to last non-space (or empty line) */
+        for (int c = 0; c <= last_col && pos < size - 1; c++) {
             const char_cell_t *cell = &screen->cells[r * screen->cols + c];
             buffer[pos++] = cell->ch;
         }
+        
+        /* Add newline after each row */
         if (pos < size - 1) {
             buffer[pos++] = '\n';
         }

@@ -29,7 +29,7 @@ DAEMON_SOURCES = $(shell find $(SRC_DIR)/daemon -name '*.c') \
                  $(shell find $(SRC_DIR)/pty -name '*.c') \
                  $(shell find $(SRC_DIR)/terminal -name '*.c') \
                  $(shell find $(SRC_DIR)/pattern -name '*.c') \
-                 $(shell find $(SRC_DIR)/utils -name '*.c')
+                 $(shell find $(SRC_DIR)/utils -name '*.c' ! -name 'test_stubs.c')
 
 CLIENT_SOURCES = $(shell find $(SRC_DIR)/cli -name '*.c') \
                  $(SRC_DIR)/utils/logger.c \
@@ -52,7 +52,7 @@ CLIENT = $(BIN_DIR)/pshell-client
 CTL = $(BIN_DIR)/pshellctl
 
 # Test sources
-TEST_SOURCES = $(shell find tests/unit -name '*.c')
+TEST_SOURCES = $(shell find tests/unit -name 'test_*.c')
 TEST_OBJECTS = $(TEST_SOURCES:tests/unit/%.c=$(BUILD_DIR)/tests/%.o)
 TEST_BINS = $(TEST_SOURCES:tests/unit/%.c=$(BIN_DIR)/tests/%)
 
@@ -89,10 +89,15 @@ $(BUILD_DIR)/tests/%.o: tests/unit/%.c
 	@echo "Compiling test $<..."
 	@$(CC) $(CFLAGS) -I$(INCLUDE_DIR) -c $< -o $@
 
-$(BIN_DIR)/tests/%: $(BUILD_DIR)/tests/%.o $(DAEMON_OBJECTS)
+$(BUILD_DIR)/utils/test_stubs.o: $(SRC_DIR)/utils/test_stubs.c
+	@mkdir -p $(dir $@)
+	@echo "Compiling test stubs..."
+	@$(CC) $(CFLAGS) -I$(INCLUDE_DIR) -c $< -o $@
+
+$(BIN_DIR)/tests/%: $(BUILD_DIR)/tests/%.o $(BUILD_DIR)/utils/test_stubs.o $(DAEMON_OBJECTS)
 	@mkdir -p $(dir $@)
 	@echo "Linking test $@..."
-	@$(CC) $< $(filter-out $(BUILD_DIR)/daemon/main.o,$(DAEMON_OBJECTS)) -o $@ $(LDFLAGS)
+	@$(CC) $< $(BUILD_DIR)/utils/test_stubs.o $(filter-out $(BUILD_DIR)/daemon/main.o,$(DAEMON_OBJECTS)) -o $@ $(LDFLAGS)
 
 test: $(TEST_BINS)
 	@echo "Running unit tests..."

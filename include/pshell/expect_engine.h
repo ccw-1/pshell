@@ -1,127 +1,131 @@
 #ifndef PSHELL_EXPECT_ENGINE_H
 #define PSHELL_EXPECT_ENGINE_H
 
+#include "pshell/pattern_matcher.h"
+#include "pshell/session.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <time.h>
-#include "pshell/pattern_matcher.h"
 
 /**
- * Expect Engine - Pattern-based output matching with timeout
+ * Expect Engine - Pattern-based automation for terminal sessions
  * 
- * Monitors session output and matches against patterns,
- * with configurable timeout handling.
+ * Waits for specific patterns in terminal output and can send
+ * responses automatically (like expect/tcl).
  */
 
-/* Forward declarations */
-typedef struct session session_t;
-
-/* Expect result codes */
+/* Expect result */
 typedef enum {
-    EXPECT_MATCHED = 0,     /* Pattern matched */
-    EXPECT_TIMEOUT = 1,     /* Timeout expired */
-    EXPECT_EOF = 2,         /* End of file/session closed */
-    EXPECT_ERROR = 3        /* Error occurred */
+    EXPECT_MATCHED,         /* Pattern matched */
+    EXPECT_TIMEOUT,         /* Timeout reached */
+    EXPECT_EOF,             /* End of file (session closed) */
+    EXPECT_ERROR            /* Error occurred */
 } expect_result_t;
 
-/* Expect match information */
+/* Expect context */
 typedef struct {
-    expect_result_t result;     /* Result code */
-    int pattern_index;          /* Index of matched pattern (-1 if none) */
-    char *matched_text;         /* Matched text (allocated) */
-    size_t match_start;         /* Start position in buffer */
-    size_t match_end;           /* End position in buffer */
-    char *before;               /* Text before match (allocated) */
-    char *after;                /* Text after match (allocated) */
-    int nmatch;                 /* Number of submatches */
-    char **submatches;          /* Submatch strings (allocated array) */
-} expect_match_t;
-
-/* Expect engine */
-typedef struct {
-    session_t *session;         /* Associated session */
-    pattern_matcher_t **patterns; /* Array of patterns */
-    int npatterns;              /* Number of patterns */
-    int timeout_ms;             /* Timeout in milliseconds */
-    char *buffer;               /* Accumulated output buffer */
-    size_t buffer_size;         /* Current buffer size */
-    size_t buffer_capacity;     /* Buffer capacity */
-    bool case_sensitive;        /* Case-sensitive matching */
-} expect_engine_t;
+    session_t *session;     /* Session to monitor */
+    char *buffer;           /* Accumulated output buffer */
+    size_t buffer_size;     /* Buffer size */
+    size_t buffer_used;     /* Bytes used in buffer */
+    time_t start_time;      /* Start time for timeout */
+    int timeout_ms;         /* Timeout in milliseconds */
+} expect_context_t;
 
 /**
- * Create expect engine
+ * Create expect context
  * @param session Session to monitor
  * @param timeout_ms Timeout in milliseconds (0 = no timeout)
+ * @return Context or NULL on error
+ */
+expect_context_t *expect_context_create(session_t *session, int timeout_ms);
+
+/**
+ * Destroy expect context
+ * @param ctx Context to destroy
+ */
+void expect_context_destroy(expect_context_t *ctx);
+
+/**
+ * Wait for pattern in session output
+ * @param ctx Expect context
+ * @param pattern Regex pattern to match
  * @param case_sensitive Whether matching is case-sensitive
- * @return Engine or NULL on error
+ * @param result Output match result (optional, caller must free)
+ * @return Expect result
  */
-expect_engine_t *expect_engine_create(session_t *session, int timeout_ms, bool case_sensitive);
-
-/**
- * Destroy expect engine
- * @param engine Engine to destroy
- */
-void expect_engine_destroy(expect_engine_t *engine);
-
-/**
- * Add pattern to expect engine
- * @param engine Expect engine
- * @param pattern Regex pattern string
- * @return Pattern index or -1 on error
- */
-int expect_engine_add_pattern(expect_engine_t *engine, const char *pattern);
-
-/**
- * Clear all patterns
- * @param engine Expect engine
- */
-void expect_engine_clear_patterns(expect_engine_t *engine);
-
-/**
- * Wait for pattern match
- * @param engine Expect engine
- * @param match Output match information (caller must free with expect_match_free)
- * @return Expect result code
- */
-expect_result_t expect_engine_wait(expect_engine_t *engine, expect_match_t *match);
+expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
+                               bool case_sensitive, match_result_t *result);
 
 /**
  * Wait for any of multiple patterns
- * @param engine Expect engine
- * @param patterns Array of pattern strings
- * @param npatterns Number of patterns
- * @param match Output match information (caller must free with expect_match_free)
- * @return Expect result code
+ * @param ctx Expect context
+ * @param patterns Array of patterns
+ * @param num_patterns Number of patterns
+ * @param case_sensitive Whether matching is case-sensitive
+ * @param matched_index Output index of matched pattern
+ * @param result Output match result (optional, caller must free)
+ * @return Expect result
  */
-expect_result_t expect_engine_wait_patterns(expect_engine_t *engine, 
-                                           const char **patterns, int npatterns,
-                                           expect_match_t *match);
+expect_result_t expect_any(expect_context_t *ctx, const char **patterns,
+                           int num_patterns, bool case_sensitive,
+                           int *matched_index, match_result_t *result);
 
 /**
- * Set timeout
- * @param engine Expect engine
- * @param timeout_ms Timeout in milliseconds (0 = no timeout)
+ * Wait for exact string in output
+ * @param ctx Expect context
+ * @param str String to wait for
+ * @param case_sensitive Whether matching is case-sensitive
+ * @return Expect result
  */
-void expect_engine_set_timeout(expect_engine_t *engine, int timeout_ms);
+expect_result_t expect_string(expect_context_t *ctx, const char *str,
+                              bool case_sensitive);
 
 /**
- * Get accumulated buffer
- * @param engine Expect engine
+ * Get accumulated output buffer
+ * @param ctx Expect context
  * @return Buffer contents (do not free)
  */
-const char *expect_engine_get_buffer(expect_engine_t *engine);
+const char *expect_get_buffer(const expect_context_t *ctx);
 
 /**
- * Clear accumulated buffer
- * @param engine Expect engine
+ * Clear accumulated output buffer
+ * @param ctx Expect context
  */
-void expect_engine_clear_buffer(expect_engine_t *engine);
+void expect_clear_buffer(expect_context_t *ctx);
 
 /**
- * Free expect match resources
- * @param match Match to free
+ * Check if timeout has been reached
+ * @param ctx Expect context
+ * @return true if timeout reached
  */
-void expect_match_free(expect_match_t *match);
+bool expect_is_timeout(const expect_context_t *ctx);
+
+/**
+ * Get remaining timeout in milliseconds
+ * @param ctx Expect context
+ * @return Remaining timeout or -1 if no timeout
+ */
+int expect_get_remaining_timeout(const expect_context_t *ctx);
+
+/**
+ * Send text and wait for pattern (convenience function)
+ * @param session Session
+ * @param send_text Text to send (can be NULL)
+ * @param expect_pattern Pattern to wait for
+ * @param timeout_ms Timeout in milliseconds
+ * @param result Output match result (optional, caller must free)
+ * @return Expect result
+ */
+expect_result_t expect_send_and_wait(session_t *session, const char *send_text,
+                                     const char *expect_pattern, int timeout_ms,
+                                     match_result_t *result);
+
+/**
+ * Get result name (for debugging)
+ * @param result Expect result
+ * @return Result name string
+ */
+const char *expect_result_name(expect_result_t result);
 
 #endif /* PSHELL_EXPECT_ENGINE_H */
