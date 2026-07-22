@@ -137,39 +137,44 @@ Examples:
 
 ### pshellctl
 
+**Important:** Use single quotes (`'`) to prevent shell interpretation of escape sequences. Double quotes (`"`) allow the shell to interpret escapes before pshellctl sees them.
+
 ```bash
-# Send newline
-pshellctl send $SESSION "ls -la\n"
+# Send newline (use single quotes!)
+pshellctl send $SESSION 'ls -la\n'
 
 # Send Ctrl-C to interrupt
-pshellctl send $SESSION "\cC"
+pshellctl send $SESSION '\cC'
 
 # Send Ctrl-D to exit
-pshellctl send $SESSION "\cD"
+pshellctl send $SESSION '\cD'
 
 # Navigate with arrow keys
-pshellctl send $SESSION "\UP\UP\n"
+pshellctl send $SESSION '\UP\UP\n'
 
 # Use function keys
-pshellctl send $SESSION "\F1"
+pshellctl send $SESSION '\F1'
 
 # Clear screen
-pshellctl send $SESSION "\cL"
+pshellctl send $SESSION '\cL'
 
 # Select text with Shift+arrows
-pshellctl send $SESSION "\SHIFT_RIGHT\SHIFT_RIGHT\SHIFT_RIGHT"
+pshellctl send $SESSION '\SHIFT_RIGHT\SHIFT_RIGHT\SHIFT_RIGHT'
 
 # Backtab (Shift+Tab)
-pshellctl send $SESSION "\SHIFT_TAB"
+pshellctl send $SESSION '\SHIFT_TAB'
 
 # Complex sequence: Home, Shift+End (select line), Delete
-pshellctl send $SESSION "\HOME\SHIFT_END\DEL"
+pshellctl send $SESSION '\HOME\SHIFT_END\DEL'
 
 # Hex escape for Ctrl-C
-pshellctl send $SESSION "\x03"
+pshellctl send $SESSION '\x03'
 
 # Octal escape for ESC
-pshellctl send $SESSION "\033"
+pshellctl send $SESSION '\033'
+
+# If you must use double quotes, escape the backslash
+pshellctl send $SESSION "ls -la\\n"  # Shell sees \\n, pshellctl sees \n
 ```
 
 ### REST API
@@ -200,26 +205,26 @@ curl -X POST http://localhost:8080/api/sessions/$SESSION/send \
 
 ```bash
 # Go to start of line, clear to end
-pshellctl send $SESSION "\cA\cK"
+pshellctl send $SESSION '\cA\cK'
 
 # Go to end of line
-pshellctl send $SESSION "\cE"
+pshellctl send $SESSION '\cE'
 
 # Previous command (up arrow + enter)
-pshellctl send $SESSION "\UP\n"
+pshellctl send $SESSION '\UP\n'
 ```
 
 ### 2. Text Editor Control
 
 ```bash
 # Vim: Save and quit
-pshellctl send $SESSION "\e:wq\n"
+pshellctl send $SESSION '\e:wq\n'
 
 # Emacs: Save file
-pshellctl send $SESSION "\cX\cS"
+pshellctl send $SESSION '\cX\cS'
 
 # Nano: Exit
-pshellctl send $SESSION "\cX"
+pshellctl send $SESSION '\cX'
 ```
 
 ### 3. Application Automation
@@ -227,37 +232,37 @@ pshellctl send $SESSION "\cX"
 ```bash
 # SSH password prompt
 pshellctl expect $SESSION "password:"
-pshellctl send $SESSION "mypassword\n"
+pshellctl send $SESSION 'mypassword\n'
 
 # Menu navigation with function keys
-pshellctl send $SESSION "\F1"  # Help
-pshellctl send $SESSION "\F10" # Exit
+pshellctl send $SESSION '\F1'  # Help
+pshellctl send $SESSION '\F10' # Exit
 ```
 
 ### 4. Text Selection and Editing
 
 ```bash
 # Select word (Shift+Right x5, then copy)
-pshellctl send $SESSION "\SHIFT_RIGHT\SHIFT_RIGHT\SHIFT_RIGHT\SHIFT_RIGHT\SHIFT_RIGHT\cC"
+pshellctl send $SESSION '\SHIFT_RIGHT\SHIFT_RIGHT\SHIFT_RIGHT\SHIFT_RIGHT\SHIFT_RIGHT\cC'
 
 # Select entire line
-pshellctl send $SESSION "\HOME\SHIFT_END"
+pshellctl send $SESSION '\HOME\SHIFT_END'
 
 # Delete selected text
-pshellctl send $SESSION "\DEL"
+pshellctl send $SESSION '\DEL'
 ```
 
 ### 5. Terminal Control
 
 ```bash
 # Clear screen
-pshellctl send $SESSION "\cL"
+pshellctl send $SESSION '\cL'
 
 # Reset terminal
-pshellctl send $SESSION "\ec"
+pshellctl send $SESSION '\ec'
 
 # Send break signal
-pshellctl send $SESSION "\cC"
+pshellctl send $SESSION '\cC'
 ```
 
 ## Implementation Notes
@@ -299,10 +304,10 @@ pshellctl send $SESSION "\cC"
 pshell -d
 
 # View raw bytes sent
-pshellctl send $SESSION "\cC" 2>&1 | od -c
+pshellctl send $SESSION '\cC' 2>&1 | od -c
 
 # Check terminal type
-pshellctl send $SESSION "echo \$TERM\n"
+pshellctl send $SESSION 'echo $TERM\n'
 ```
 
 ## Reference

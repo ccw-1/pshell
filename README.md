@@ -64,30 +64,30 @@ pshellctl create --command bash --scrollback 5000 --output /tmp/session.log
 # List sessions
 pshellctl list
 
-# Send text with escape sequences
-pshellctl send <session-id> "ls -la\n"
+# Send text with escape sequences (use single quotes!)
+pshellctl send <session-id> 'ls -la\n'
 
 # Send control characters
-pshellctl send <session-id> "\cC"           # Ctrl-C
-pshellctl send <session-id> "\cD"           # Ctrl-D
+pshellctl send <session-id> '\cC'           # Ctrl-C
+pshellctl send <session-id> '\cD'           # Ctrl-D
 
 # Send function keys
-pshellctl send <session-id> "\F1"           # F1 key
-pshellctl send <session-id> "\F12"          # F12 key
+pshellctl send <session-id> '\F1'           # F1 key
+pshellctl send <session-id> '\F12'          # F12 key
 
 # Send arrow keys
-pshellctl send <session-id> "\UP"           # Up arrow
-pshellctl send <session-id> "\DOWN"         # Down arrow
+pshellctl send <session-id> '\UP'           # Up arrow
+pshellctl send <session-id> '\DOWN'         # Down arrow
 
 # Send special keys
-pshellctl send <session-id> "\HOME"         # Home key
-pshellctl send <session-id> "\END"          # End key
-pshellctl send <session-id> "\DEL"          # Delete key
+pshellctl send <session-id> '\HOME'         # Home key
+pshellctl send <session-id> '\END'          # End key
+pshellctl send <session-id> '\DEL'          # Delete key
 
 # Send Shift+keys (for text selection)
-pshellctl send <session-id> "\SHIFT_UP"     # Shift+Up arrow
-pshellctl send <session-id> "\SHIFT_TAB"    # Shift+Tab (backtab)
-pshellctl send <session-id> "\SHIFT_F1"     # Shift+F1 (F13)
+pshellctl send <session-id> '\SHIFT_UP'     # Shift+Up arrow
+pshellctl send <session-id> '\SHIFT_TAB'    # Shift+Tab (backtab)
+pshellctl send <session-id> '\SHIFT_F1'     # Shift+F1 (F13)
 
 # Get scrollback buffer (retrieve terminal history)
 pshellctl scrollback <session-id> --start 0 --count 50
@@ -359,11 +359,11 @@ http://localhost:8080/
 SESSION=$(pshellctl create ./myapp)
 
 # Interact
-pshellctl send $SESSION "login\n"
+pshellctl send $SESSION 'login\n'
 pshellctl expect $SESSION "Username:"
-pshellctl send $SESSION "admin\n"
+pshellctl send $SESSION 'admin\n'
 pshellctl expect $SESSION "Password:"
-pshellctl send $SESSION "secret\n"
+pshellctl send $SESSION 'secret\n'
 pshellctl expect $SESSION "Welcome"
 
 # Verify
@@ -376,9 +376,9 @@ pshellctl screen $SESSION | grep "Dashboard"
 # SSH automation
 SESSION=$(pshellctl create "ssh user@host")
 pshellctl expect $SESSION "password:"
-pshellctl send $SESSION "mypassword\n"
+pshellctl send $SESSION 'mypassword\n'
 pshellctl expect $SESSION "\\$ "
-pshellctl send $SESSION "uptime\n"
+pshellctl send $SESSION 'uptime\n'
 ```
 
 ### 3. CI/CD Integration
@@ -400,9 +400,9 @@ test:
 for host in host1 host2 host3; do
   SESSION=$(pshellctl create "ssh admin@$host")
   pshellctl expect $SESSION "password:"
-  pshellctl send $SESSION "$PASSWORD\n"
+  pshellctl send $SESSION "$PASSWORD"'\n'
   pshellctl expect $SESSION "\\$ "
-  pshellctl send $SESSION "uptime\n"
+  pshellctl send $SESSION 'uptime\n'
   pshellctl screen $SESSION
 done
 ```

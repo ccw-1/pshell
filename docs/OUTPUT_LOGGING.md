@@ -286,8 +286,8 @@ SESSION_ID=$(pshellctl create --command bash \
   --output "/var/log/audit/session-$(date +%Y%m%d-%H%M%S).log")
 
 # All activity is logged
-pshellctl send $SESSION_ID "whoami\n"
-pshellctl send $SESSION_ID "sudo systemctl restart nginx\n"
+pshellctl send $SESSION_ID 'whoami\n'
+pshellctl send $SESSION_ID 'sudo systemctl restart nginx\n'
 
 # Log file contains complete history
 ```
@@ -302,7 +302,7 @@ SESSION_ID=$(pshellctl create --command "./myapp" \
   --output "/tmp/myapp-debug.log")
 
 # Reproduce issue
-pshellctl send $SESSION_ID "test command\n"
+pshellctl send $SESSION_ID 'test command\n'
 
 # Analyze log file
 grep ERROR /tmp/myapp-debug.log
@@ -332,8 +332,8 @@ SESSION_ID=$(pshellctl create --command bash \
   --output "/tmp/session-recording.log")
 
 # Perform actions
-pshellctl send $SESSION_ID "ls -la\n"
-pshellctl send $SESSION_ID "cat file.txt\n"
+pshellctl send $SESSION_ID 'ls -la\n'
+pshellctl send $SESSION_ID 'cat file.txt\n'
 
 # Replay with timing (requires scriptreplay or similar)
 cat /tmp/session-recording.log
@@ -635,11 +635,11 @@ SESSION_ID=$(pshellctl create --command bash \
     --output "/tmp/script-session.log")
 
 # Run commands
-pshellctl send "$SESSION_ID" "date\n"
+pshellctl send "$SESSION_ID" 'date\n'
 sleep 1
-pshellctl send "$SESSION_ID" "whoami\n"
+pshellctl send "$SESSION_ID" 'whoami\n'
 sleep 1
-pshellctl send "$SESSION_ID" "pwd\n"
+pshellctl send "$SESSION_ID" 'pwd\n'
 sleep 1
 
 # Destroy session
