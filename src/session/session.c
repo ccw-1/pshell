@@ -15,8 +15,9 @@
 #define MAX_SESSIONS 100
 #define RAW_BUFFER_SIZE (64 * 1024)  /* 64KB circular buffer for raw PTY output */
 
-/* Forward declaration of PTY callback */
+/* Forward declarations */
 static void session_pty_callback(int fd, io_event_type_t events, void *user_data);
+static void session_flush_output_log(session_t *session);
 
 /* Session structure */
 struct session {
@@ -48,6 +49,11 @@ struct session {
     char *output_buffer;
     size_t output_buffer_used;
     size_t output_buffer_size;
+    
+    /* Output rotation */
+    int rotate_count;        /* Number of rotation files (0 = no rotation) */
+    int rotate_lines;        /* Max lines per file before rotation */
+    int current_line_count;  /* Current line count in active file */
 };
 
 /* Session manager structure */
@@ -118,6 +124,48 @@ void session_manager_destroy(session_manager_t *mgr) {
 /* Output logging helper functions */
 #define OUTPUT_BUFFER_SIZE 8192
 
+static void session_rotate_output_files(session_t *session) {
+    if (!session || session->rotate_count <= 0) {
+        return;
+    }
+    
+    char old_path[600];
+    char new_path[600];
+    
+    /* Remove oldest file (e.g., output.3 if rotate_count is 4) */
+    snprintf(old_path, sizeof(old_path), "%s.%d", session->output_file, session->rotate_count - 1);
+    unlink(old_path);  /* Ignore errors if file doesn't exist */
+    
+    /* Rotate files: .2 -> .3, .1 -> .2, .0 -> .1 */
+    for (int i = session->rotate_count - 2; i >= 0; i--) {
+        snprintf(old_path, sizeof(old_path), "%s.%d", session->output_file, i);
+        snprintf(new_path, sizeof(new_path), "%s.%d", session->output_file, i + 1);
+        rename(old_path, new_path);  /* Ignore errors if file doesn't exist */
+    }
+    
+    /* Close current file */
+    if (session->output_fd >= 0) {
+        session_flush_output_log(session);
+        close(session->output_fd);
+        session->output_fd = -1;
+    }
+    
+    /* Rename current file to .0 */
+    snprintf(new_path, sizeof(new_path), "%s.0", session->output_file);
+    rename(session->output_file, new_path);
+    
+    /* Open new file */
+    session->output_fd = open(session->output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (session->output_fd < 0) {
+        log_error("Failed to open rotated output file '%s': %s", session->output_file, strerror(errno));
+    } else {
+        log_info("Rotated output file for session %s (lines: %d)", session->id, session->current_line_count);
+    }
+    
+    /* Reset line counter */
+    session->current_line_count = 0;
+}
+
 static bool session_open_output_file(session_t *session, const char *output_file) {
     if (!session || !output_file || !output_file[0]) {
         return false;
@@ -153,9 +201,29 @@ static void session_write_output_log(session_t *session, const char *data, size_
         return;
     }
     
-    /* Write to buffer */
+    /* Write to buffer and count newlines for rotation */
     for (size_t i = 0; i < len; i++) {
         session->output_buffer[session->output_buffer_used++] = data[i];
+        
+        /* Count newlines for rotation */
+        if (session->rotate_count > 0 && data[i] == '\n') {
+            session->current_line_count++;
+            
+            /* Check if rotation needed */
+            if (session->current_line_count >= session->rotate_lines) {
+                /* Flush current buffer first */
+                if (session->output_buffer_used > 0) {
+                    ssize_t written = write(session->output_fd, session->output_buffer, session->output_buffer_used);
+                    if (written < 0) {
+                        log_error("Failed to write to output file: %s", strerror(errno));
+                    }
+                    session->output_buffer_used = 0;
+                }
+                
+                /* Rotate files */
+                session_rotate_output_files(session);
+            }
+        }
         
         /* Flush if buffer full */
         if (session->output_buffer_used >= session->output_buffer_size) {
@@ -274,7 +342,9 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
                                                     uid_t uid, gid_t gid,
                                                     const char *username,
                                                     int scrollback_lines,
-                                                    const char *output_file) {
+                                                    const char *output_file,
+                                                    int rotate_count,
+                                                    int rotate_lines) {
     if (!mgr || !command) {
         log_error("Invalid parameters");
         return NULL;
@@ -377,6 +447,11 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     session->output_buffer_used = 0;
     session->output_buffer_size = 0;
     
+    /* Initialize output rotation (disabled by default) */
+    session->rotate_count = 0;
+    session->rotate_lines = 0;
+    session->current_line_count = 0;
+    
     /* Initialize session state */
     session->state = SESSION_STATE_ACTIVE;
     session->created = time(NULL);
@@ -403,6 +478,11 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     
     /* Open output log file if specified */
     if (output_file && output_file[0]) {
+        /* Set rotation parameters before opening file */
+        session->rotate_count = (rotate_count > 0) ? rotate_count : 0;
+        session->rotate_lines = (rotate_lines > 0) ? rotate_lines : 0;
+        session->current_line_count = 0;
+        
         if (!session_open_output_file(session, output_file)) {
             log_warn("Failed to open output file, continuing without logging");
         }
@@ -425,8 +505,10 @@ const char* session_manager_create_session(session_manager_t *mgr,
                                            const char *command,
                                            int rows, int cols,
                                            int scrollback_lines,
-                                           const char *output_file) {
-    return session_manager_create_session_as_user(mgr, command, rows, cols, 0, 0, NULL, scrollback_lines, output_file);
+                                           const char *output_file,
+                                           int rotate_count,
+                                           int rotate_lines) {
+    return session_manager_create_session_as_user(mgr, command, rows, cols, 0, 0, NULL, scrollback_lines, output_file, rotate_count, rotate_lines);
 }
 
 session_t* session_manager_get(session_manager_t *mgr, const char *session_id) {

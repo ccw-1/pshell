@@ -187,6 +187,8 @@ static void handle_create_session(http_request_t *req, http_response_t *resp, vo
     int cols = json_object_get_int(json, "cols", 80);
     int scrollback_lines = json_object_get_int(json, "scrollback_lines", 1000);
     const char *output_file = json_object_get_string(json, "output_file");
+    int rotate_count = json_object_get_int(json, "rotate_count", 0);
+    int rotate_lines = json_object_get_int(json, "rotate_lines", 0);
     
     /* Use default shell if command not specified */
     if (!command) {
@@ -195,7 +197,7 @@ static void handle_create_session(http_request_t *req, http_response_t *resp, vo
     }
     
     /* Create session using session manager */
-    const char *session_id = session_manager_create_session(api->session_mgr, command, rows, cols, scrollback_lines, output_file);
+    const char *session_id = session_manager_create_session(api->session_mgr, command, rows, cols, scrollback_lines, output_file, rotate_count, rotate_lines);
     if (!session_id) {
         json_free(json);
         http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to create session");

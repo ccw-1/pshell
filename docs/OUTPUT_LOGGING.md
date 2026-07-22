@@ -92,6 +92,147 @@ pshellctl create --command "ssh user@host" --output /var/log/ssh-sessions.log
 }
 ```
 
+## Log Rotation
+
+### Overview
+
+Log rotation automatically manages log file size by creating multiple numbered files and rotating them when a line limit is reached. This prevents individual log files from growing too large while maintaining complete history.
+
+### Configuration
+
+Rotation is configured via two parameters:
+- `rotate_count` (integer): Number of rotation files to maintain (e.g., 4 creates .0, .1, .2, .3)
+- `rotate_lines` (integer): Maximum lines per file before rotation
+
+**File Naming:**
+- Active file: `output.log` (specified path)
+- Rotated files: `output.log.0`, `output.log.1`, `output.log.2`, `output.log.3`
+- Oldest file has highest number (e.g., `.3` is oldest when rotate_count=4)
+
+### REST API
+
+```bash
+curl -X POST http://localhost:8080/api/sessions \
+  -H "X-API-Key: mykey" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "bash",
+    "output_file": "/var/log/session.log",
+    "rotate_count": 4,
+    "rotate_lines": 1000
+  }'
+```
+
+**Parameters:**
+- `rotate_count` (optional, integer): Number of rotation files (0 = no rotation)
+- `rotate_lines` (optional, integer): Lines per file before rotation (0 = no rotation)
+
+### pshellctl
+
+```bash
+pshellctl create --command bash \
+  --output /var/log/session.log \
+  --rotate 4:1000
+```
+
+**Format:** `--rotate n:m`
+- `n`: Number of rotation files (rotate_count)
+- `m`: Lines per file (rotate_lines)
+
+**Examples:**
+```bash
+# Rotate with 4 files, 1000 lines each
+pshellctl create --command bash --output /tmp/session.log --rotate 4:1000
+
+# Rotate with 10 files, 5000 lines each
+pshellctl create --command bash --output /var/log/app.log --rotate 10:5000
+
+# Combined with scrollback
+pshellctl create --command bash --scrollback 2000 \
+  --output /tmp/session.log --rotate 5:2000
+```
+
+### Rotation Behavior
+
+**When Rotation Occurs:**
+1. Line counter increments on each newline (`\n`) character
+2. When `current_line_count >= rotate_lines`:
+   - Current buffer is flushed to disk
+   - Files are rotated (oldest deleted, others shifted)
+   - New file is created
+   - Line counter resets to 0
+
+**Rotation Process:**
+```
+Before rotation (rotate_count=4, at 1000 lines):
+  session.log      (1000 lines, active)
+  session.log.0    (1000 lines)
+  session.log.1    (1000 lines)
+  session.log.2    (1000 lines)
+  session.log.3    (1000 lines) <- oldest
+
+After rotation:
+  session.log      (0 lines, new file)
+  session.log.0    (1000 lines, was session.log)
+  session.log.1    (1000 lines, was session.log.0)
+  session.log.2    (1000 lines, was session.log.1)
+  session.log.3    (1000 lines, was session.log.2)
+  [old .3 deleted]
+```
+
+**Total Capacity:**
+- With `rotate_count=4` and `rotate_lines=1000`:
+  - Active file: up to 1000 lines
+  - 4 rotated files: 4000 lines
+  - **Total: ~5000 lines** across all files
+
+### Use Cases
+
+**1. Long-Running Sessions**
+```bash
+# Keep last 50,000 lines (10 files × 5000 lines)
+pshellctl create --command "tail -f /var/log/syslog" \
+  --output /var/log/pshell/syslog-monitor.log \
+  --rotate 10:5000
+```
+
+**2. High-Volume Output**
+```bash
+# Rotate frequently for verbose applications
+pshellctl create --command "./verbose-app" \
+  --output /tmp/app.log \
+  --rotate 20:500
+```
+
+**3. Disk Space Management**
+```bash
+# Limit total disk usage (4 files × 1000 lines ≈ 4MB)
+pshellctl create --command bash \
+  --output /var/log/session.log \
+  --rotate 4:1000
+```
+
+**4. Audit Trail with Retention**
+```bash
+# Keep last 100,000 lines of audit history
+pshellctl create --command "ssh admin@prod" \
+  --output /var/log/audit/admin-session.log \
+  --rotate 20:5000
+```
+
+### Performance Impact
+
+- **Line Counting**: Minimal overhead (single comparison per newline)
+- **Rotation**: Brief pause during file operations (~10-50ms)
+- **Disk I/O**: Rotation involves file renames (fast) and one file deletion
+
+### Limitations
+
+- Rotation is based on **line count**, not file size
+- Lines with no newline character don't trigger rotation
+- Very long lines (no `\n`) can exceed expected file size
+- Rotation occurs during write, may cause brief output delay
+
 ## Log File Format
 
 ### Raw PTY Output

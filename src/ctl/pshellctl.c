@@ -40,10 +40,12 @@ static void print_usage(const char *prog) {
     printf("  -h           Show this help\n");
     printf("\n");
     printf("Commands:\n");
-    printf("  create [--command <cmd>] [--rows <n>] [--cols <n>] [--scrollback <lines>] [--output <file>]\n");
+    printf("  create [--command <cmd>] [--rows <n>] [--cols <n>] [--scrollback <lines>] [--output <file>] [--rotate n:m]\n");
     printf("      Create new session\n");
     printf("      --scrollback: Number of scrollback lines (default: 1000)\n");
     printf("      --output: Log all output to file (append mode, raw PTY data)\n");
+    printf("      --rotate: Rotate log files (n=count, m=lines per file, e.g., 4:1000)\n");
+    printf("                Creates files: output.0, output.1, output.2, output.3\n");
     printf("\n");
     printf("  list\n");
     printf("      List all sessions\n");
@@ -91,6 +93,8 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
     int cols = 80;
     int scrollback_lines = 0;  /* 0 = use default (1000) */
     const char *output_file = NULL;
+    int rotate_count = 0;
+    int rotate_lines = 0;
     
     /* Parse arguments */
     for (int i = 0; i < argc; i++) {
@@ -104,15 +108,32 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
             scrollback_lines = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
             output_file = argv[++i];
+        } else if (strcmp(argv[i], "--rotate") == 0 && i + 1 < argc) {
+            /* Parse rotate format: n:m (count:lines) */
+            const char *rotate_spec = argv[++i];
+            if (sscanf(rotate_spec, "%d:%d", &rotate_count, &rotate_lines) != 2) {
+                fprintf(stderr, "Invalid --rotate format. Use: n:m (e.g., 4:1000)\n");
+                return 1;
+            }
+            if (rotate_count <= 0 || rotate_lines <= 0) {
+                fprintf(stderr, "Invalid --rotate values. Both n and m must be positive.\n");
+                return 1;
+            }
         }
     }
     
     /* Build request */
     char request[1024];
     if (output_file) {
-        snprintf(request, sizeof(request),
-                 "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d,\"output_file\":\"%s\"}}",
-                 command, rows, cols, scrollback_lines, output_file);
+        if (rotate_count > 0 && rotate_lines > 0) {
+            snprintf(request, sizeof(request),
+                     "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d,\"output_file\":\"%s\",\"rotate_count\":%d,\"rotate_lines\":%d}}",
+                     command, rows, cols, scrollback_lines, output_file, rotate_count, rotate_lines);
+        } else {
+            snprintf(request, sizeof(request),
+                     "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d,\"output_file\":\"%s\"}}",
+                     command, rows, cols, scrollback_lines, output_file);
+        }
     } else {
         snprintf(request, sizeof(request),
                  "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d}}",

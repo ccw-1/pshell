@@ -60,6 +60,8 @@ void session_manager_destroy(session_manager_t *mgr);
  * @param username Username for logging (optional)
  * @param scrollback_lines Number of scrollback lines (0 = default 1000)
  * @param output_file Path to output log file (NULL = no logging)
+ * @param rotate_count Number of rotation files (0 = no rotation)
+ * @param rotate_lines Max lines per file before rotation (0 = no rotation)
  * @return Session ID or NULL on error
  */
 const char* session_manager_create_session_as_user(session_manager_t *mgr,
@@ -68,7 +70,9 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
                                                     uid_t uid, gid_t gid,
                                                     const char *username,
                                                     int scrollback_lines,
-                                                    const char *output_file);
+                                                    const char *output_file,
+                                                    int rotate_count,
+                                                    int rotate_lines);
 
 /**
  * Create new session (legacy, no privilege separation)
@@ -78,13 +82,17 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
  * @param cols Terminal columns
  * @param scrollback_lines Number of scrollback lines (0 = default 1000)
  * @param output_file Path to output log file (NULL = no logging)
+ * @param rotate_count Number of rotation files (0 = no rotation)
+ * @param rotate_lines Max lines per file before rotation (0 = no rotation)
  * @return Session ID or NULL on error
  */
 const char* session_manager_create_session(session_manager_t *mgr,
                                            const char *command,
                                            int rows, int cols,
                                            int scrollback_lines,
-                                           const char *output_file);
+                                           const char *output_file,
+                                           int rotate_count,
+                                           int rotate_lines);
 
 /**
  * Get session by ID

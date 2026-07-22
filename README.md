@@ -55,6 +55,9 @@ pshellctl create --command bash --scrollback 5000
 # Create session with output logging (captures all terminal output)
 pshellctl create --command bash --output /tmp/session.log
 
+# Create session with output logging and rotation (4 files, 1000 lines each)
+pshellctl create --command bash --output /tmp/session.log --rotate 4:1000
+
 # Create session with both scrollback and output logging
 pshellctl create --command bash --scrollback 5000 --output /tmp/session.log
 
@@ -148,6 +151,12 @@ curl -X POST http://localhost:8080/api/sessions \
   -H "X-API-Key: mykey" \
   -H "Content-Type: application/json" \
   -d '{"command":"bash","rows":24,"cols":80,"output_file":"/tmp/session.log"}'
+
+# Create session with output logging and rotation (4 files, 1000 lines each)
+curl -X POST http://localhost:8080/api/sessions \
+  -H "X-API-Key: mykey" \
+  -H "Content-Type: application/json" \
+  -d '{"command":"bash","rows":24,"cols":80,"output_file":"/tmp/session.log","rotate_count":4,"rotate_lines":1000}'
 
 # Create session with both scrollback and output logging
 curl -X POST http://localhost:8080/api/sessions \
