@@ -41,6 +41,8 @@ static void print_usage(const char *prog) {
     printf("\n");
     printf("Options:\n");
     printf("  -s <path>    Socket path (default: %s)\n", DEFAULT_SOCKET_PATH);
+    printf("               Can also be set via PSHELL_SOCKET_PATH environment variable\n");
+    printf("               Priority: -s flag > PSHELL_SOCKET_PATH > default\n");
     printf("  -h           Show this help\n");
     printf("\n");
     printf("Commands:\n");
@@ -820,7 +822,13 @@ int main(int argc, char **argv) {
     const char *socket_path = DEFAULT_SOCKET_PATH;
     int opt;
     
-    /* Parse options */
+    /* Check for environment variable override */
+    const char *env_socket = getenv("PSHELL_SOCKET_PATH");
+    if (env_socket && env_socket[0] != '\0') {
+        socket_path = env_socket;
+    }
+    
+    /* Parse options (command-line overrides environment variable) */
     while ((opt = getopt(argc, argv, "s:h")) != -1) {
         switch (opt) {
             case 's':
