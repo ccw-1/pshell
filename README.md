@@ -222,6 +222,11 @@ External Clients (REST/Web/pshellctl)
 
 **[Wiki Home](wiki/index.md)** - Complete documentation organized by audience (Users, Operators, Developers, Maintainers)
 
+### 🔒 Security Documentation
+
+- **[SECURITY.md](docs/SECURITY.md)** - Multi-user security considerations and best practices
+- **[ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)** - Environment variable configuration
+
 ### Quick Links by Role
 
 #### For Users
@@ -296,6 +301,7 @@ log_file = /var/log/pshell.log
 log_level = info
 
 [http]
+enabled = false  # Disabled by default for security (see SECURITY.md)
 port = 8080
 bind_address = 127.0.0.1
 max_connections = 50
