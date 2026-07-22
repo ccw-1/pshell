@@ -141,7 +141,8 @@ int config_get_int(const config_t *cfg, const char *section,
     if (!value) return default_value;
     
     char *endptr;
-    long result = strtol(value, &endptr, 10);
+    /* Auto-detect base: 0 = auto (0x for hex, 0 for octal, else decimal) */
+    long result = strtol(value, &endptr, 0);
     
     if (*endptr != '\0') return default_value;
     
