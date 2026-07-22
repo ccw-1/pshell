@@ -139,6 +139,7 @@ static void handle_create_session(socket_connection_t *conn, json_value_t *param
     int rows = json_object_get_int(params, "rows", 24);
     int cols = json_object_get_int(params, "cols", 80);
     int scrollback_lines = json_object_get_int(params, "scrollback_lines", 1000);
+    const char *output_file = json_object_get_string(params, "output_file");
     
     /* Use default shell if command not specified */
     if (!command) {
@@ -147,7 +148,7 @@ static void handle_create_session(socket_connection_t *conn, json_value_t *param
     }
     
     /* Create session */
-    const char *session_id = session_manager_create_session(mgr, command, rows, cols, scrollback_lines);
+    const char *session_id = session_manager_create_session(mgr, command, rows, cols, scrollback_lines, output_file);
     if (!session_id) {
         send_error(conn, "Failed to create session");
         return;

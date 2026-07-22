@@ -40,9 +40,10 @@ static void print_usage(const char *prog) {
     printf("  -h           Show this help\n");
     printf("\n");
     printf("Commands:\n");
-    printf("  create [--command <cmd>] [--rows <n>] [--cols <n>] [--scrollback <lines>]\n");
+    printf("  create [--command <cmd>] [--rows <n>] [--cols <n>] [--scrollback <lines>] [--output <file>]\n");
     printf("      Create new session\n");
     printf("      --scrollback: Number of scrollback lines (default: 1000)\n");
+    printf("      --output: Log all output to file (append mode, raw PTY data)\n");
     printf("\n");
     printf("  list\n");
     printf("      List all sessions\n");
@@ -89,6 +90,7 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
     int rows = 24;
     int cols = 80;
     int scrollback_lines = 0;  /* 0 = use default (1000) */
+    const char *output_file = NULL;
     
     /* Parse arguments */
     for (int i = 0; i < argc; i++) {
@@ -100,14 +102,22 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
             cols = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--scrollback") == 0 && i + 1 < argc) {
             scrollback_lines = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
+            output_file = argv[++i];
         }
     }
     
     /* Build request */
     char request[1024];
-    snprintf(request, sizeof(request),
-             "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d}}",
-             command, rows, cols, scrollback_lines);
+    if (output_file) {
+        snprintf(request, sizeof(request),
+                 "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d,\"output_file\":\"%s\"}}",
+                 command, rows, cols, scrollback_lines, output_file);
+    } else {
+        snprintf(request, sizeof(request),
+                 "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d}}",
+                 command, rows, cols, scrollback_lines);
+    }
     
     /* Send request */
     char response[4096];

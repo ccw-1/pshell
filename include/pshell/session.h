@@ -58,6 +58,8 @@ void session_manager_destroy(session_manager_t *mgr);
  * @param uid User ID (0 = use daemon's UID)
  * @param gid Group ID (0 = use daemon's GID)
  * @param username Username for logging (optional)
+ * @param scrollback_lines Number of scrollback lines (0 = default 1000)
+ * @param output_file Path to output log file (NULL = no logging)
  * @return Session ID or NULL on error
  */
 const char* session_manager_create_session_as_user(session_manager_t *mgr,
@@ -65,7 +67,8 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
                                                     int rows, int cols,
                                                     uid_t uid, gid_t gid,
                                                     const char *username,
-                                                    int scrollback_lines);
+                                                    int scrollback_lines,
+                                                    const char *output_file);
 
 /**
  * Create new session (legacy, no privilege separation)
@@ -74,12 +77,14 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
  * @param rows Terminal rows
  * @param cols Terminal columns
  * @param scrollback_lines Number of scrollback lines (0 = default 1000)
+ * @param output_file Path to output log file (NULL = no logging)
  * @return Session ID or NULL on error
  */
 const char* session_manager_create_session(session_manager_t *mgr,
                                            const char *command,
                                            int rows, int cols,
-                                           int scrollback_lines);
+                                           int scrollback_lines,
+                                           const char *output_file);
 
 /**
  * Get session by ID

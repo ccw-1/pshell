@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <errno.h>
 
@@ -40,6 +41,13 @@ struct session {
     size_t raw_write_pos;
     size_t raw_read_pos;
     size_t raw_available;
+    
+    /* Output logging */
+    char output_file[512];
+    int output_fd;
+    char *output_buffer;
+    size_t output_buffer_used;
+    size_t output_buffer_size;
 };
 
 /* Session manager structure */
@@ -107,6 +115,95 @@ void session_manager_destroy(session_manager_t *mgr) {
     log_info("Destroyed session manager");
 }
 
+/* Output logging helper functions */
+#define OUTPUT_BUFFER_SIZE 8192
+
+static bool session_open_output_file(session_t *session, const char *output_file) {
+    if (!session || !output_file || !output_file[0]) {
+        return false;
+    }
+    
+    /* Open file in append mode */
+    session->output_fd = open(output_file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (session->output_fd < 0) {
+        log_error("Failed to open output file '%s': %s", output_file, strerror(errno));
+        return false;
+    }
+    
+    /* Allocate write buffer */
+    session->output_buffer = malloc(OUTPUT_BUFFER_SIZE);
+    if (!session->output_buffer) {
+        log_error("Failed to allocate output buffer");
+        close(session->output_fd);
+        session->output_fd = -1;
+        return false;
+    }
+    
+    session->output_buffer_size = OUTPUT_BUFFER_SIZE;
+    session->output_buffer_used = 0;
+    strncpy(session->output_file, output_file, sizeof(session->output_file) - 1);
+    session->output_file[sizeof(session->output_file) - 1] = '\0';
+    
+    log_info("Opened output file for session %s: %s", session->id, output_file);
+    return true;
+}
+
+static void session_write_output_log(session_t *session, const char *data, size_t len) {
+    if (!session || session->output_fd < 0 || !data || len == 0) {
+        return;
+    }
+    
+    /* Write to buffer */
+    for (size_t i = 0; i < len; i++) {
+        session->output_buffer[session->output_buffer_used++] = data[i];
+        
+        /* Flush if buffer full */
+        if (session->output_buffer_used >= session->output_buffer_size) {
+            ssize_t written = write(session->output_fd, session->output_buffer, session->output_buffer_used);
+            if (written < 0) {
+                log_error("Failed to write to output file: %s", strerror(errno));
+            }
+            session->output_buffer_used = 0;
+        }
+    }
+}
+
+static void session_flush_output_log(session_t *session) {
+    if (!session || session->output_fd < 0 || session->output_buffer_used == 0) {
+        return;
+    }
+    
+    ssize_t written = write(session->output_fd, session->output_buffer, session->output_buffer_used);
+    if (written < 0) {
+        log_error("Failed to flush output file: %s", strerror(errno));
+    }
+    session->output_buffer_used = 0;
+}
+
+static void session_close_output_file(session_t *session) {
+    if (!session) return;
+    
+    /* Flush remaining data */
+    session_flush_output_log(session);
+    
+    /* Close file */
+    if (session->output_fd >= 0) {
+        close(session->output_fd);
+        session->output_fd = -1;
+        log_info("Closed output file for session %s", session->id);
+    }
+    
+    /* Free buffer */
+    if (session->output_buffer) {
+        free(session->output_buffer);
+        session->output_buffer = NULL;
+        session->output_buffer_size = 0;
+        session->output_buffer_used = 0;
+    }
+    
+    session->output_file[0] = '\0';
+}
+
 /* PTY callback - called when PTY has data to read */
 static void session_pty_callback(int fd, io_event_type_t events, void *user_data) {
     (void)fd;  /* Unused parameter */
@@ -123,6 +220,11 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
         
         if (n > 0) {
             session->last_activity = time(NULL);
+            
+            /* Write to output log file if enabled */
+            if (session->output_fd >= 0) {
+                session_write_output_log(session, buffer, n);
+            }
             
             /* Store raw output in circular buffer */
             if (session->raw_buffer) {
@@ -171,7 +273,8 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
                                                     int rows, int cols,
                                                     uid_t uid, gid_t gid,
                                                     const char *username,
-                                                    int scrollback_lines) {
+                                                    int scrollback_lines,
+                                                    const char *output_file) {
     if (!mgr || !command) {
         log_error("Invalid parameters");
         return NULL;
@@ -267,6 +370,13 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     session->raw_read_pos = 0;
     session->raw_available = 0;
     
+    /* Initialize output logging (disabled by default) */
+    session->output_file[0] = '\0';
+    session->output_fd = -1;
+    session->output_buffer = NULL;
+    session->output_buffer_used = 0;
+    session->output_buffer_size = 0;
+    
     /* Initialize session state */
     session->state = SESSION_STATE_ACTIVE;
     session->created = time(NULL);
@@ -291,12 +401,21 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     
     mgr->session_count++;
     
+    /* Open output log file if specified */
+    if (output_file && output_file[0]) {
+        if (!session_open_output_file(session, output_file)) {
+            log_warn("Failed to open output file, continuing without logging");
+        }
+    }
+    
     if (username) {
-        log_info("Created session: id=%s, command=%s, pid=%d, rows=%d, cols=%d, user=%s",
-                 session->id, session->command, session->pid, session->rows, session->cols, username);
+        log_info("Created session: id=%s, command=%s, pid=%d, rows=%d, cols=%d, user=%s%s",
+                 session->id, session->command, session->pid, session->rows, session->cols, username,
+                 (session->output_fd >= 0) ? ", output_file=enabled" : "");
     } else {
-        log_info("Created session: id=%s, command=%s, pid=%d, rows=%d, cols=%d",
-                 session->id, session->command, session->pid, session->rows, session->cols);
+        log_info("Created session: id=%s, command=%s, pid=%d, rows=%d, cols=%d%s",
+                 session->id, session->command, session->pid, session->rows, session->cols,
+                 (session->output_fd >= 0) ? ", output_file=enabled" : "");
     }
     
     return session->id;
@@ -305,8 +424,9 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
 const char* session_manager_create_session(session_manager_t *mgr,
                                            const char *command,
                                            int rows, int cols,
-                                           int scrollback_lines) {
-    return session_manager_create_session_as_user(mgr, command, rows, cols, 0, 0, NULL, scrollback_lines);
+                                           int scrollback_lines,
+                                           const char *output_file) {
+    return session_manager_create_session_as_user(mgr, command, rows, cols, 0, 0, NULL, scrollback_lines, output_file);
 }
 
 session_t* session_manager_get(session_manager_t *mgr, const char *session_id) {
@@ -348,6 +468,9 @@ bool session_manager_destroy_session(session_manager_t *mgr, const char *session
         kill(session->pid, SIGKILL);
         waitpid(session->pid, NULL, WNOHANG);
     }
+    
+    /* Close output log file if open */
+    session_close_output_file(session);
     
     /* Remove PTY FD from multiplexer */
     if (session->pty && mgr->mux) {

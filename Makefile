@@ -135,6 +135,7 @@ deploy: all
 	cp $(CTL) ~/local/bin
 	cp config/pshell.conf ~/local/etc
 	@echo "deploy complete."
+	pshell -c ~/local/etc/pshell.conf -f
 
 help:
 	@echo "pshell - Portable Programmable Shell"

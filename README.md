@@ -52,6 +52,12 @@ sudo systemctl start pshell
 # Create session with custom scrollback buffer
 pshellctl create --command bash --scrollback 5000
 
+# Create session with output logging (captures all terminal output)
+pshellctl create --command bash --output /tmp/session.log
+
+# Create session with both scrollback and output logging
+pshellctl create --command bash --scrollback 5000 --output /tmp/session.log
+
 # List sessions
 pshellctl list
 
@@ -136,6 +142,18 @@ curl -X POST http://localhost:8080/api/sessions \
   -H "X-API-Key: mykey" \
   -H "Content-Type: application/json" \
   -d '{"command":"ssh user@host","rows":24,"cols":80,"scrollback_lines":5000}'
+
+# Create session with output logging
+curl -X POST http://localhost:8080/api/sessions \
+  -H "X-API-Key: mykey" \
+  -H "Content-Type: application/json" \
+  -d '{"command":"bash","rows":24,"cols":80,"output_file":"/tmp/session.log"}'
+
+# Create session with both scrollback and output logging
+curl -X POST http://localhost:8080/api/sessions \
+  -H "X-API-Key: mykey" \
+  -H "Content-Type: application/json" \
+  -d '{"command":"bash","rows":24,"cols":80,"scrollback_lines":5000,"output_file":"/tmp/session.log"}'
 
 # Send text
 curl -X POST http://localhost:8080/api/sessions/<session-id>/send \
