@@ -44,6 +44,25 @@ sudo pshell -c /etc/pshell/pshell.conf
 
 # Or use systemd (Linux)
 sudo systemctl start pshell
+
+# Start in foreground (for debugging)
+pshell -c /etc/pshell/pshell.conf -f
+```
+
+### Stop Daemon
+
+```bash
+# Graceful shutdown using PID file
+kill $(cat /tmp/pshell.pid)
+
+# Or find and stop by name
+pkill pshell
+
+# Or use systemd (Linux)
+sudo systemctl stop pshell
+
+# If running in foreground mode (-f)
+# Press Ctrl+C to stop
 ```
 
 ### Control via Socket (Recommended for Local Use)
