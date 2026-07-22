@@ -334,41 +334,52 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    // Initialize HTTP server
-    fprintf(stderr, "DEBUG: About to get HTTP config\n");
+    // Initialize HTTP server (if enabled)
+    fprintf(stderr, "DEBUG: About to check http_enabled config\n");
     fflush(stderr);
-    const char *bind_addr = config_get_string(g_config, "http", "bind_address", "127.0.0.1");
-    int http_port = config_get_int(g_config, "http", "port", 8080);
+    bool http_enabled = config_get_bool(g_config, "http", "enabled", false);
+    fprintf(stderr, "DEBUG: http_enabled=%d\n", http_enabled);
+    fflush(stderr);
     
-    fprintf(stderr, "DEBUG: Creating HTTP server on %s:%d\n", bind_addr, http_port);
-    fflush(stderr);
-    g_http_server = http_server_create(bind_addr, http_port);
-    fprintf(stderr, "DEBUG: HTTP server created: %p\n", (void*)g_http_server);
-    fflush(stderr);
-    if (!g_http_server) {
-        log_error("Failed to create HTTP server");
-        io_multiplexer_destroy(g_mux);
-        remove_pid_file(pid_file);
-        logger_shutdown();
-        config_free(g_config);
-        return 1;
+    if (http_enabled) {
+        fprintf(stderr, "DEBUG: About to get HTTP config\n");
+        fflush(stderr);
+        const char *bind_addr = config_get_string(g_config, "http", "bind_address", "127.0.0.1");
+        int http_port = config_get_int(g_config, "http", "port", 8080);
+        
+        fprintf(stderr, "DEBUG: Creating HTTP server on %s:%d\n", bind_addr, http_port);
+        fflush(stderr);
+        g_http_server = http_server_create(bind_addr, http_port);
+        fprintf(stderr, "DEBUG: HTTP server created: %p\n", (void*)g_http_server);
+        fflush(stderr);
+        if (!g_http_server) {
+            log_error("Failed to create HTTP server");
+            io_multiplexer_destroy(g_mux);
+            remove_pid_file(pid_file);
+            logger_shutdown();
+            config_free(g_config);
+            return 1;
+        }
+        
+        /* Set static file directory for web interface */
+        fprintf(stderr, "DEBUG: About to get static_dir config\n");
+        fflush(stderr);
+        const char *static_dir = config_get_string(g_config, "http", "static_dir", "web");
+        fprintf(stderr, "DEBUG: static_dir=%s, about to call http_server_set_static_dir\n", static_dir);
+        fflush(stderr);
+        http_server_set_static_dir(g_http_server, static_dir);
+        fprintf(stderr, "DEBUG: http_server_set_static_dir completed\n");
+        fflush(stderr);
+        log_info("Static files directory: %s", static_dir);
+        fprintf(stderr, "DEBUG: Logged static dir\n");
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "DEBUG: HTTP server disabled\n");
+        fflush(stderr);
+        log_info("HTTP server disabled in configuration");
     }
-    
-    
-    /* Set static file directory for web interface */
-    fprintf(stderr, "DEBUG: About to get static_dir config\n");
-    fflush(stderr);
-    const char *static_dir = config_get_string(g_config, "http", "static_dir", "web");
-    fprintf(stderr, "DEBUG: static_dir=%s, about to call http_server_set_static_dir\n", static_dir);
-    fflush(stderr);
-    http_server_set_static_dir(g_http_server, static_dir);
-    fprintf(stderr, "DEBUG: http_server_set_static_dir completed\n");
-    fflush(stderr);
-    log_info("Static files directory: %s", static_dir);
-    fprintf(stderr, "DEBUG: Logged static dir\n");
-    fflush(stderr);
 
-    // Initialize session manager first
+    // Initialize session manager (needed for both HTTP and socket)
     fprintf(stderr, "DEBUG: About to get max_sessions config\n");
     fflush(stderr);
     int max_sessions = config_get_int(g_config, "sessions", "max_sessions", 50);
@@ -379,7 +390,7 @@ int main(int argc, char **argv) {
     fflush(stderr);
     if (!g_session_mgr) {
         log_error("Failed to create session manager");
-        http_server_destroy(g_http_server);
+        if (g_http_server) http_server_destroy(g_http_server);
         io_multiplexer_destroy(g_mux);
         remove_pid_file(pid_file);
         logger_shutdown();
@@ -388,94 +399,102 @@ int main(int argc, char **argv) {
     }
     log_info("Session manager initialized (max_sessions=%d)", max_sessions);
     
-    // Initialize REST API with session manager
-    fprintf(stderr, "DEBUG: About to create REST API\n");
-    fflush(stderr);
-    g_rest_api = rest_api_create(g_http_server, g_session_mgr);
-    fprintf(stderr, "DEBUG: REST API created: %p\n", (void*)g_rest_api);
-    fflush(stderr);
-    if (!g_rest_api) {
-        log_error("Failed to create REST API");
-        session_manager_destroy(g_session_mgr);
-        http_server_destroy(g_http_server);
-        io_multiplexer_destroy(g_mux);
-        remove_pid_file(pid_file);
-        logger_shutdown();
-        config_free(g_config);
-        return 1;
-    }
-    
-    // Set API key if configured
-    fprintf(stderr, "DEBUG: About to get API key config\n");
-    fflush(stderr);
-    const char *api_key = config_get_string(g_config, "http", "api_key", NULL);
-    fprintf(stderr, "DEBUG: api_key=%s\n", api_key ? "SET" : "NULL");
-    fflush(stderr);
-    if (api_key) {
-        fprintf(stderr, "DEBUG: Setting API key\n");
+    // Initialize REST API and start HTTP server (if enabled)
+    if (http_enabled && g_http_server) {
+        // Initialize REST API with session manager
+        fprintf(stderr, "DEBUG: About to create REST API\n");
         fflush(stderr);
-        rest_api_set_key(g_rest_api, api_key);
-        log_info("API key authentication enabled");
-        fprintf(stderr, "DEBUG: API key set\n");
+        g_rest_api = rest_api_create(g_http_server, g_session_mgr);
+        fprintf(stderr, "DEBUG: REST API created: %p\n", (void*)g_rest_api);
+        fflush(stderr);
+        if (!g_rest_api) {
+            log_error("Failed to create REST API");
+            session_manager_destroy(g_session_mgr);
+            http_server_destroy(g_http_server);
+            io_multiplexer_destroy(g_mux);
+            remove_pid_file(pid_file);
+            logger_shutdown();
+            config_free(g_config);
+            return 1;
+        }
+        
+        // Set API key if configured
+        fprintf(stderr, "DEBUG: About to get API key config\n");
+        fflush(stderr);
+        const char *api_key = config_get_string(g_config, "http", "api_key", NULL);
+        fprintf(stderr, "DEBUG: api_key=%s\n", api_key ? "SET" : "NULL");
+        fflush(stderr);
+        if (api_key) {
+            fprintf(stderr, "DEBUG: Setting API key\n");
+            fflush(stderr);
+            rest_api_set_key(g_rest_api, api_key);
+            log_info("API key authentication enabled");
+            fprintf(stderr, "DEBUG: API key set\n");
+            fflush(stderr);
+        }
+        
+        // Register REST API routes
+        fprintf(stderr, "DEBUG: About to register REST API routes\n");
+        fflush(stderr);
+        if (!rest_api_register_routes(g_rest_api)) {
+            log_error("Failed to register REST API routes");
+            rest_api_destroy(g_rest_api);
+            http_server_destroy(g_http_server);
+            session_manager_destroy(g_session_mgr);
+            io_multiplexer_destroy(g_mux);
+            remove_pid_file(pid_file);
+            logger_shutdown();
+            config_free(g_config);
+            return 1;
+        }
+        
+        fprintf(stderr, "DEBUG: REST API routes registered successfully\n");
+        fflush(stderr);
+        
+        // Start HTTP server
+        fprintf(stderr, "DEBUG: About to start HTTP server\n");
+        fflush(stderr);
+        if (!http_server_start(g_http_server)) {
+            log_error("Failed to start HTTP server");
+            rest_api_destroy(g_rest_api);
+            http_server_destroy(g_http_server);
+            session_manager_destroy(g_session_mgr);
+            io_multiplexer_destroy(g_mux);
+            remove_pid_file(pid_file);
+            logger_shutdown();
+            config_free(g_config);
+            return 1;
+        }
+        
+        fprintf(stderr, "DEBUG: HTTP server started, getting fd\n");
+        fflush(stderr);
+        
+        // Add HTTP server to multiplexer
+        int http_fd = http_server_get_fd(g_http_server);
+        fprintf(stderr, "DEBUG: Got http_fd=%d, adding to multiplexer\n", http_fd);
+        fflush(stderr);
+        
+        if (!io_multiplexer_add(g_mux, http_fd, IO_EVENT_READ, http_server_callback, g_http_server)) {
+            log_error("Failed to add HTTP server to multiplexer");
+            http_server_stop(g_http_server);
+            rest_api_destroy(g_rest_api);
+            http_server_destroy(g_http_server);
+            session_manager_destroy(g_session_mgr);
+            io_multiplexer_destroy(g_mux);
+            remove_pid_file(pid_file);
+            logger_shutdown();
+            config_free(g_config);
+            return 1;
+        }
+        
+        fprintf(stderr, "DEBUG: Added to multiplexer, about to log_info\n");
+        fflush(stderr);
+        const char *bind_addr = config_get_string(g_config, "http", "bind_address", "127.0.0.1");
+        int http_port = config_get_int(g_config, "http", "port", 8080);
+        log_info("HTTP server listening on %s:%d", bind_addr, http_port);
+        fprintf(stderr, "DEBUG: log_info completed\n");
         fflush(stderr);
     }
-    
-    // Register REST API routes
-    fprintf(stderr, "DEBUG: About to register REST API routes\n");
-    fflush(stderr);
-    if (!rest_api_register_routes(g_rest_api)) {
-        log_error("Failed to register REST API routes");
-        rest_api_destroy(g_rest_api);
-        http_server_destroy(g_http_server);
-        io_multiplexer_destroy(g_mux);
-        remove_pid_file(pid_file);
-        logger_shutdown();
-        config_free(g_config);
-        return 1;
-    }
-    
-    fprintf(stderr, "DEBUG: REST API routes registered successfully\n");
-    fflush(stderr);
-    
-    // Start HTTP server
-    fprintf(stderr, "DEBUG: About to start HTTP server\n");
-    fflush(stderr);
-    if (!http_server_start(g_http_server)) {
-        log_error("Failed to start HTTP server");
-        rest_api_destroy(g_rest_api);
-        http_server_destroy(g_http_server);
-        io_multiplexer_destroy(g_mux);
-        remove_pid_file(pid_file);
-        logger_shutdown();
-        config_free(g_config);
-        return 1;
-    }
-    
-    fprintf(stderr, "DEBUG: HTTP server started, getting fd\n");
-    fflush(stderr);
-    
-    // Add HTTP server to multiplexer
-    int http_fd = http_server_get_fd(g_http_server);
-    fprintf(stderr, "DEBUG: Got http_fd=%d, adding to multiplexer\n", http_fd);
-    fflush(stderr);
-    
-    if (!io_multiplexer_add(g_mux, http_fd, IO_EVENT_READ, http_server_callback, g_http_server)) {
-        log_error("Failed to add HTTP server to multiplexer");
-        http_server_stop(g_http_server);
-        rest_api_destroy(g_rest_api);
-        http_server_destroy(g_http_server);
-        io_multiplexer_destroy(g_mux);
-        remove_pid_file(pid_file);
-        logger_shutdown();
-        config_free(g_config);
-        return 1;
-    }
-    
-    fprintf(stderr, "DEBUG: Added to multiplexer, about to log_info\n");
-    fflush(stderr);
-    log_info("HTTP server listening on %s:%d", bind_addr, http_port);
-    fprintf(stderr, "DEBUG: log_info completed\n");
-    fflush(stderr);
     
     // Initialize Unix socket server
     fprintf(stderr, "DEBUG: About to check socket_enabled config\n");
