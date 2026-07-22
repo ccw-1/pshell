@@ -301,6 +301,64 @@ size_t str_unescape(char *str) {
                     break;
                 
                 /* Special keys: \UP \DOWN \LEFT \RIGHT \HOME \END \INS \DEL \PGUP \PGDN */
+                /* Shift modifier: \SHIFT_UP \SHIFT_F1 \SHIFT_TAB etc. */
+                case 'S':  /* SHIFT_* keys */
+                    if (src[1] == 'H' && src[2] == 'I' && src[3] == 'F' && src[4] == 'T' && src[5] == '_') {
+                        src += 5;  /* Skip "HIFT_" */
+                        
+                        /* Shift+Arrow keys */
+                        if (src[1] == 'U' && src[2] == 'P' && (src[3] == '\0' || src[3] == '\\')) {
+                            *dst++ = '\033'; *dst++ = '['; *dst++ = '1'; *dst++ = ';'; *dst++ = '2'; *dst++ = 'A';
+                            src += 2;
+                        } else if (src[1] == 'D' && src[2] == 'O' && src[3] == 'W' && src[4] == 'N' && (src[5] == '\0' || src[5] == '\\')) {
+                            *dst++ = '\033'; *dst++ = '['; *dst++ = '1'; *dst++ = ';'; *dst++ = '2'; *dst++ = 'B';
+                            src += 4;
+                        } else if (src[1] == 'L' && src[2] == 'E' && src[3] == 'F' && src[4] == 'T' && (src[5] == '\0' || src[5] == '\\')) {
+                            *dst++ = '\033'; *dst++ = '['; *dst++ = '1'; *dst++ = ';'; *dst++ = '2'; *dst++ = 'D';
+                            src += 4;
+                        } else if (src[1] == 'R' && src[2] == 'I' && src[3] == 'G' && src[4] == 'H' && src[5] == 'T' && (src[6] == '\0' || src[6] == '\\')) {
+                            *dst++ = '\033'; *dst++ = '['; *dst++ = '1'; *dst++ = ';'; *dst++ = '2'; *dst++ = 'C';
+                            src += 5;
+                        }
+                        /* Shift+Tab (backtab) */
+                        else if (src[1] == 'T' && src[2] == 'A' && src[3] == 'B' && (src[4] == '\0' || src[4] == '\\')) {
+                            *dst++ = '\033'; *dst++ = '['; *dst++ = 'Z';
+                            src += 3;
+                        }
+                        /* Shift+Function keys (F13-F24) */
+                        else if (src[1] == 'F' && src[2] >= '1' && src[2] <= '9') {
+                            src++;  /* Skip 'F' */
+                            int fkey = *src - '0';
+                            src++;
+                            if (*src >= '0' && *src <= '9') {
+                                fkey = fkey * 10 + (*src - '0');
+                            } else {
+                                src--;
+                            }
+                            
+                            if (fkey >= 1 && fkey <= 12) {
+                                /* Shift+F1-F12 = F13-F24 */
+                                const char *seq[] = {
+                                    "[25~", "[26~", "[28~", "[29~",  /* F13-F16 */
+                                    "[31~", "[32~", "[33~", "[34~",  /* F17-F20 */
+                                    "[23;2~", "[24;2~", "[25;2~", "[26;2~"  /* F21-F24 */
+                                };
+                                *dst++ = '\033';
+                                const char *s = seq[fkey - 1];
+                                while (*s) *dst++ = *s++;
+                            } else {
+                                src -= (fkey >= 10) ? 1 : 0;
+                                *dst++ = 'S'; *dst++ = 'H'; *dst++ = 'I'; *dst++ = 'F'; *dst++ = 'T'; *dst++ = '_'; *dst++ = 'F';
+                            }
+                        } else {
+                            /* Unknown SHIFT_ combination */
+                            *dst++ = 'S'; *dst++ = 'H'; *dst++ = 'I'; *dst++ = 'F'; *dst++ = 'T'; *dst++ = '_';
+                            src--;
+                        }
+                    } else {
+                        *dst++ = *src;
+                    }
+                    break;
                 case 'U':  /* UP */
                     if (src[1] == 'P' && (src[2] == '\0' || src[2] == '\\')) {
                         *dst++ = '\033'; *dst++ = '['; *dst++ = 'A';

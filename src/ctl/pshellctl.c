@@ -56,6 +56,7 @@ static void print_usage(const char *prog) {
     printf("        Function keys: \\F1 through \\F12\n");
     printf("        Arrow keys: \\UP \\DOWN \\LEFT \\RIGHT\n");
     printf("        Special: \\HOME \\END \\INS \\DEL \\PGUP \\PGDN\n");
+    printf("        Shift+keys: \\SHIFT_UP \\SHIFT_F1 \\SHIFT_TAB\n");
     printf("        Numeric: \\x03 (hex) \\033 (octal)\n");
     printf("\n");
     printf("  output <session-id>\n");
