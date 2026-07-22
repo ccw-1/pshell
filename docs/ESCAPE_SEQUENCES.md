@@ -182,19 +182,19 @@ pshellctl send $SESSION "ls -la\\n"  # Shell sees \\n, pshellctl sees \n
 ```bash
 # Send with escape sequences
 curl -X POST http://localhost:8080/api/sessions/$SESSION/send \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"text":"ls -la\\n"}'
 
 # Send Ctrl-C
 curl -X POST http://localhost:8080/api/sessions/$SESSION/send \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"text":"\\cC"}'
 
 # Send function key
 curl -X POST http://localhost:8080/api/sessions/$SESSION/send \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"text":"\\F1"}'
 ```

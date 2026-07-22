@@ -45,7 +45,7 @@ Content-Type: application/json
 **Example:**
 ```bash
 curl -X POST http://localhost:8080/api/sessions \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "command": "bash",
@@ -113,7 +113,7 @@ Rotation is configured via two parameters:
 
 ```bash
 curl -X POST http://localhost:8080/api/sessions \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "command": "bash",
@@ -601,7 +601,7 @@ import time
 
 # Create session with logging
 response = requests.post('http://localhost:8080/api/sessions',
-    headers={'X-API-Key': 'mykey'},
+    headers={'X-API-Key': '<your-generated-key>'},
     json={
         'command': 'bash',
         'output_file': '/tmp/python-session.log'
@@ -611,14 +611,14 @@ session_id = response.json()['id']
 
 # Send commands
 requests.post(f'http://localhost:8080/api/sessions/{session_id}/send',
-    headers={'X-API-Key': 'mykey'},
+    headers={'X-API-Key': '<your-generated-key>'},
     json={'text': 'echo "Hello from Python"\n'})
 
 time.sleep(1)
 
 # Destroy session (flushes log)
 requests.delete(f'http://localhost:8080/api/sessions/{session_id}',
-    headers={'X-API-Key': 'mykey'})
+    headers={'X-API-Key': '<your-generated-key>'})
 
 # Read log file
 with open('/tmp/python-session.log', 'r') as f:

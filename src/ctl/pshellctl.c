@@ -14,6 +14,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <time.h>
+#include <stdint.h>
 
 #define DEFAULT_SOCKET_PATH "/tmp/pshell.sock"
 
@@ -31,6 +34,7 @@ static int cmd_scrollback(socket_client_t *client, int argc, char **argv);
 
 static int cmd_destroy(socket_client_t *client, int argc, char **argv);
 static int cmd_status(socket_client_t *client, int argc, char **argv);
+static int cmd_generate_key(int argc, char **argv);
 
 static void print_usage(const char *prog) {
     printf("Usage: %s [options] <command> [args...]\n", prog);
@@ -84,6 +88,11 @@ static void print_usage(const char *prog) {
     printf("\n");
     printf("  status\n");
     printf("      Get daemon status\n");
+    printf("\n");
+    printf("  generate-key [--length <n>]\n");
+    printf("      Generate a cryptographically secure API key\n");
+    printf("      --length: Key length in bytes (default: 32, min: 16, max: 64)\n");
+    printf("      Output: Base64-encoded random key suitable for [auth] api_keys config\n");
     printf("\n");
 }
 
@@ -711,6 +720,102 @@ static int cmd_status(socket_client_t *client, int argc, char **argv) {
     return 0;
 }
 
+/* Base64 encoding table */
+static const char base64_chars[] = 
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* Base64 encode binary data */
+static char* base64_encode(const unsigned char *data, size_t len) {
+    size_t output_len = 4 * ((len + 2) / 3);
+    char *encoded = malloc(output_len + 1);
+    if (!encoded) return NULL;
+    
+    size_t i, j;
+    for (i = 0, j = 0; i < len;) {
+        uint32_t octet_a = i < len ? data[i++] : 0;
+        uint32_t octet_b = i < len ? data[i++] : 0;
+        uint32_t octet_c = i < len ? data[i++] : 0;
+        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+        
+        encoded[j++] = base64_chars[(triple >> 18) & 0x3F];
+        encoded[j++] = base64_chars[(triple >> 12) & 0x3F];
+        encoded[j++] = base64_chars[(triple >> 6) & 0x3F];
+        encoded[j++] = base64_chars[triple & 0x3F];
+    }
+    
+    /* Add padding */
+    for (i = 0; i < (3 - len % 3) % 3; i++) {
+        encoded[output_len - 1 - i] = '=';
+    }
+    
+    encoded[output_len] = '\0';
+    return encoded;
+}
+
+static int cmd_generate_key(int argc, char **argv) {
+    int key_length = 32;  /* Default: 32 bytes = 256 bits */
+    
+    /* Parse arguments */
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--length") == 0 && i + 1 < argc) {
+            key_length = atoi(argv[i + 1]);
+            if (key_length < 16 || key_length > 64) {
+                fprintf(stderr, "Error: Key length must be between 16 and 64 bytes\n");
+                return 1;
+            }
+            i++;
+        }
+    }
+    
+    /* Allocate buffer for random bytes */
+    unsigned char *random_bytes = malloc(key_length);
+    if (!random_bytes) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        return 1;
+    }
+    
+    /* Read from /dev/urandom for cryptographic randomness */
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Error: Cannot open /dev/urandom: %s\n", strerror(errno));
+        free(random_bytes);
+        return 1;
+    }
+    
+    ssize_t bytes_read = read(fd, random_bytes, key_length);
+    close(fd);
+    
+    if (bytes_read != key_length) {
+        fprintf(stderr, "Error: Failed to read random bytes\n");
+        free(random_bytes);
+        return 1;
+    }
+    
+    /* Base64 encode the random bytes */
+    char *encoded_key = base64_encode(random_bytes, key_length);
+    free(random_bytes);
+    
+    if (!encoded_key) {
+        fprintf(stderr, "Error: Base64 encoding failed\n");
+        return 1;
+    }
+    
+    /* Output the key */
+    printf("Generated API Key (%d bytes, %zu characters):\n", key_length, strlen(encoded_key));
+    printf("%s\n", encoded_key);
+    printf("\n");
+    printf("Add to your pshell.conf:\n");
+    printf("[auth]\n");
+    printf("enabled = true\n");
+    printf("api_keys = %s\n", encoded_key);
+    printf("\n");
+    printf("Use in REST API requests:\n");
+    printf("curl -H \"X-API-Key: %s\" http://localhost:8080/api/sessions\n", encoded_key);
+    
+    free(encoded_key);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *socket_path = DEFAULT_SOCKET_PATH;
     int opt;
@@ -773,6 +878,10 @@ int main(int argc, char **argv) {
         result = cmd_destroy(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "status") == 0) {
         result = cmd_status(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "generate-key") == 0) {
+        /* generate-key doesn't need socket connection */
+        socket_client_disconnect(&client);
+        return cmd_generate_key(cmd_argc, cmd_argv);
     } else {
         fprintf(stderr, "Unknown command: %s\n", command);
         print_usage(argv[0]);

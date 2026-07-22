@@ -139,44 +139,61 @@ The `send` command supports comprehensive escape sequence processing:
 
 ### Control via REST API
 
+⚠️ **Security Warning**: The REST API requires authentication for production use. Generate a secure API key:
+
+```bash
+# Generate a cryptographically secure API key
+pshellctl generate-key
+
+# Add to /etc/pshell/pshell.conf:
+[auth]
+enabled = true
+api_keys = <generated-key>
+
+# Restart daemon to apply
+sudo systemctl restart pshell
+```
+
+**Examples** (replace `mykey` with your generated key):
+
 ```bash
 # Create session with custom scrollback buffer
 curl -X POST http://localhost:8080/api/sessions \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"command":"ssh user@host","rows":24,"cols":80,"scrollback_lines":5000}'
 
 # Create session with output logging
 curl -X POST http://localhost:8080/api/sessions \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"command":"bash","rows":24,"cols":80,"output_file":"/tmp/session.log"}'
 
 # Create session with output logging and rotation (4 files, 1000 lines each)
 curl -X POST http://localhost:8080/api/sessions \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"command":"bash","rows":24,"cols":80,"output_file":"/tmp/session.log","rotate_count":4,"rotate_lines":1000}'
 
 # Create session with both scrollback and output logging
 curl -X POST http://localhost:8080/api/sessions \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"command":"bash","rows":24,"cols":80,"scrollback_lines":5000,"output_file":"/tmp/session.log"}'
 
 # Send text
 curl -X POST http://localhost:8080/api/sessions/<session-id>/send \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"text":"ls -la\n"}'
 
 # Get scrollback buffer
 curl -X GET "http://localhost:8080/api/sessions/<session-id>/scrollback?start_line=0&count=50" \
-  -H "X-API-Key: mykey"
+  -H "X-API-Key: <your-generated-key>"
 
 # Expect pattern
 curl -X POST http://localhost:8080/api/sessions/<session-id>/expect \
-  -H "X-API-Key: mykey" \
+  -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
   -d '{"pattern":"password:","timeout":5000}'
 ```
@@ -414,18 +431,18 @@ import requests
 
 # Create session
 resp = requests.post('http://localhost:8080/api/sessions',
-    headers={'X-API-Key': 'mykey'},
+    headers={'X-API-Key': '<your-generated-key>'},
     json={'command': 'ssh user@host', 'rows': 24, 'cols': 80})
 session_id = resp.json()['id']
 
 # Wait for password prompt
 resp = requests.post(f'http://localhost:8080/api/sessions/{session_id}/expect',
-    headers={'X-API-Key': 'mykey'},
+    headers={'X-API-Key': '<your-generated-key>'},
     json={'pattern': 'password:', 'timeout': 5000})
 
 # Send password
 requests.post(f'http://localhost:8080/api/sessions/{session_id}/send',
-    headers={'X-API-Key': 'mykey'},
+    headers={'X-API-Key': '<your-generated-key>'},
     json={'text': 'mypassword\n'})
 ```
 

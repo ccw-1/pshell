@@ -371,7 +371,7 @@ Expected response:
 pshell-client list
 
 # Or use curl
-curl -H "X-API-Key: mykey" http://localhost:8080/api/sessions
+curl -H "X-API-Key: <your-generated-key>" http://localhost:8080/api/sessions
 ```
 
 ### Process Monitoring
@@ -815,7 +815,7 @@ pshellctl expect <session-id> "password:" 10000
 
 # Check buffer contents
 pshellctl output <session-id>
-curl -H "X-API-Key: mykey" \
+curl -H "X-API-Key: <your-generated-key>" \
   http://localhost:8080/api/sessions/abc123/buffer
 ```
 

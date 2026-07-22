@@ -48,7 +48,7 @@ pshellctl create --command bash --rows 24 --cols 80
 **Example**:
 ```bash
 curl -X GET "http://localhost:8080/api/sessions/abc123/scrollback?start_line=0&count=50" \
-  -H "X-API-Key: mykey"
+-H "X-API-Key: <your-generated-key>"
 ```
 
 **Response**:
