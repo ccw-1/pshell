@@ -49,14 +49,36 @@ sudo systemctl start pshell
 ### Control via Socket (Recommended for Local Use)
 
 ```bash
-# Create session
-pshellctl create ssh user@host
+# Create session with custom scrollback buffer
+pshellctl create --command bash --scrollback 5000
 
 # List sessions
 pshellctl list
 
-# Send text
+# Send text with escape sequences
 pshellctl send <session-id> "ls -la\n"
+
+# Send control characters
+pshellctl send <session-id> "\cC"           # Ctrl-C
+pshellctl send <session-id> "\cD"           # Ctrl-D
+
+# Send function keys
+pshellctl send <session-id> "\F1"           # F1 key
+pshellctl send <session-id> "\F12"          # F12 key
+
+# Send arrow keys
+pshellctl send <session-id> "\UP"           # Up arrow
+pshellctl send <session-id> "\DOWN"         # Down arrow
+
+# Send special keys
+pshellctl send <session-id> "\HOME"         # Home key
+pshellctl send <session-id> "\END"          # End key
+pshellctl send <session-id> "\DEL"          # Delete key
+
+# Send Shift+keys (for text selection)
+pshellctl send <session-id> "\SHIFT_UP"     # Shift+Up arrow
+pshellctl send <session-id> "\SHIFT_TAB"    # Shift+Tab (backtab)
+pshellctl send <session-id> "\SHIFT_F1"     # Shift+F1 (F13)
 
 # Get scrollback buffer (retrieve terminal history)
 pshellctl scrollback <session-id> --start 0 --count 50
@@ -69,6 +91,41 @@ pshellctl attach <session-id>
 
 # Destroy session
 pshellctl destroy <session-id>
+```
+
+#### Supported Escape Sequences
+
+The `send` command supports comprehensive escape sequence processing:
+
+**Standard Escapes:**
+- `\n` - Newline
+- `\r` - Carriage return
+- `\t` - Tab
+- `\e` - Escape key (ESC)
+- `\\` - Literal backslash
+
+**Control Characters:**
+- `\cX` - Control+X (e.g., `\cC` = Ctrl-C, `\cD` = Ctrl-D)
+
+**Function Keys:**
+- `\F1` through `\F12` - Function keys F1-F12
+
+**Arrow Keys:**
+- `\UP` `\DOWN` `\LEFT` `\RIGHT` - Arrow keys
+
+**Special Keys:**
+- `\HOME` `\END` - Home and End keys
+- `\INS` `\DEL` - Insert and Delete keys
+- `\PGUP` `\PGDN` - Page Up and Page Down
+
+**Shift+Keys:**
+- `\SHIFT_UP` `\SHIFT_DOWN` `\SHIFT_LEFT` `\SHIFT_RIGHT` - Shift+Arrow (text selection)
+- `\SHIFT_TAB` - Shift+Tab (backtab/reverse tab)
+- `\SHIFT_F1` through `\SHIFT_F12` - Shift+Function keys (F13-F24)
+
+**Numeric:**
+- `\xHH` - Hexadecimal (e.g., `\x03` = Ctrl-C)
+- `\NNN` - Octal (e.g., `\033` = ESC)
 ```
 
 ### Control via REST API

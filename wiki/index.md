@@ -76,6 +76,8 @@ All core components are implemented and working:
 
 ### For Users
 - [README](../README.md) - Getting started guide
+- [Escape Sequences](../docs/ESCAPE_SEQUENCES.md) - Complete escape sequence reference
+- [Scrollback API](../docs/API_SCROLLBACK.md) - Scrollback buffer API documentation
 - [Configuration](configuration.md) - Configuration options (TODO)
 - [API Reference](api-reference.md) - REST API documentation (TODO)
 - [Examples](examples.md) - Usage examples (TODO)
