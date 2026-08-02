@@ -45,3 +45,11 @@ tmp/
 temp/
 *.tmp
 ._*
+
+# Development and analysis files
+PSHELL_EXPECT_*.md
+test_*.sh
+test_*.conf
+test_raw_immediate
+test_raw_immediate.c
+pshell.conf
