@@ -43,6 +43,12 @@ struct session {
     size_t raw_read_pos;
     size_t raw_available;
     
+    /* Expect buffer (active only during expect operations) */
+    char *expect_buffer;
+    size_t expect_buffer_size;
+    size_t expect_buffer_used;
+    bool expect_active;
+    
     /* Output logging */
     char output_file[512];
     int output_fd;
@@ -306,6 +312,15 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                     } else {
                         /* Buffer full, advance read position (drop oldest data) */
                         session->raw_read_pos = (session->raw_read_pos + 1) % session->raw_buffer_size;
+                    }
+                }
+            }
+            
+            /* Also write to expect buffer if expect is active */
+            if (session->expect_active && session->expect_buffer) {
+                for (ssize_t i = 0; i < n; i++) {
+                    if (session->expect_buffer_used < session->expect_buffer_size) {
+                        session->expect_buffer[session->expect_buffer_used++] = buffer[i];
                     }
                 }
             }
@@ -692,13 +707,24 @@ ssize_t session_send_input(session_t *session, const char *data, size_t len) {
 ssize_t session_read_output(session_t *session, char *buffer, size_t size) {
     if (!session || !buffer || size == 0) return -1;
     
-    if (!session->screen) {
-        log_error("Session screen buffer not available");
+    /* If expect is active, read from expect buffer instead */
+    if (session->expect_active) {
+        return session_read_expect_output(session, buffer, size);
+    }
+    
+    if (!session->raw_buffer) {
+        log_error("Session raw buffer not available");
         return -1;
     }
     
-    /* Read from screen buffer instead of PTY (PTY is read by callback) */
-    size_t n = session_get_screen_text(session, buffer, size);
+    /* Read from raw circular buffer (streaming PTY output) */
+    size_t n = session_read_raw_output(session, buffer, size);
+    
+    if (n == 0) {
+        /* No data available - set errno for expect engine */
+        errno = EAGAIN;
+        return -1;
+    }
     
     if (n > 0) {
         session_update_activity(session);
@@ -864,9 +890,103 @@ size_t session_peek_raw_output(const session_t *session, char *buffer, size_t si
 }
 
 /**
- * Clear raw PTY output buffer
+ * Start expect operation - allocate and activate expect buffer
+ * @param session Session
+ * @return 0 on success, -1 on error
+ */
+int session_start_expect(session_t *session) {
+    if (!session) {
+        return -1;
+    }
+    
+    /* Already active */
+    if (session->expect_active) {
+        return 0;
+    }
+    
+    /* Allocate expect buffer if not already allocated */
+    if (!session->expect_buffer) {
+        session->expect_buffer_size = RAW_BUFFER_SIZE;  /* Same size as raw buffer */
+        session->expect_buffer = malloc(session->expect_buffer_size);
+        if (!session->expect_buffer) {
+            log_error("Failed to allocate expect buffer");
+            return -1;
+        }
+    }
+    
+    /* Seed expect buffer with screen buffer content instead of raw buffer */
+    session->expect_buffer_used = 0;
+    if (session->screen) {
+        char screen_text[65536];
+        size_t screen_len = screen_buffer_get_text(session->screen, screen_text, sizeof(screen_text) - 1);
+        
+        if (screen_len > 0) {
+            size_t copy_size = screen_len;
+            if (copy_size > session->expect_buffer_size) {
+                copy_size = session->expect_buffer_size;
+            }
+            
+            memcpy(session->expect_buffer, screen_text, copy_size);
+            session->expect_buffer[copy_size] = '\0';
+            session->expect_buffer_used = copy_size;
+            log_debug("Seeded expect buffer with %zu bytes from screen buffer", copy_size);
+        } else {
+            log_debug("Screen buffer empty, expect buffer not seeded");
+        }
+    }
+    
+    session->expect_active = true;
+    
+    log_debug("Started expect for session %s", session->id);
+    return 0;
+}
+
+/**
+ * Stop expect operation - deactivate expect buffer
  * @param session Session
  */
+void session_stop_expect(session_t *session) {
+    if (!session) {
+        return;
+    }
+    
+    session->expect_active = false;
+    session->expect_buffer_used = 0;
+    
+    log_debug("Stopped expect for session %s", session->id);
+}
+
+/**
+ * Read from expect buffer (non-destructive peek)
+ * @param session Session
+ * @param buffer Output buffer
+ * @param size Maximum bytes to read
+ * @return Number of bytes read
+ */
+ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size) {
+    if (!session || !buffer || size == 0) {
+        return -1;
+    }
+    
+    if (!session->expect_active || !session->expect_buffer) {
+        log_debug("session_read_expect_output: expect not active or buffer null");
+        errno = EINVAL;
+        return -1;
+    }
+    
+    /* Return all accumulated data */
+    size_t to_copy = (size < session->expect_buffer_used) ? size : session->expect_buffer_used;
+    
+    log_debug("session_read_expect_output: returning %zu bytes (buffer_used=%zu)", 
+              to_copy, session->expect_buffer_used);
+    
+    if (to_copy > 0) {
+        memcpy(buffer, session->expect_buffer, to_copy);
+    }
+    
+    return (ssize_t)to_copy;
+}
+
 void session_clear_raw_buffer(session_t *session) {
     if (!session || !session->raw_buffer) {
         return;

@@ -616,14 +616,18 @@ static int cmd_expect(socket_client_t *client, int argc, char **argv) {
     if (status_str && strcmp(status_str, "success") == 0) {
         json_value_t *result = json_object_get(root, "result");
         if (result) {
-            bool matched = json_object_get_bool(result, "matched", false);
-            if (matched) {
+            bool found = json_object_get_bool(result, "found", false);
+            if (found) {
                 const char *matched_text = json_object_get_string(result, "matched_text");
+                int line = json_object_get_int(result, "line", 0);
                 if (matched_text) {
-                    printf("Matched: \"%s\"\n", matched_text);
+                    printf("Matched: \"%s\" at %d\n", matched_text, line);
+                } else {
+                    printf("Pattern matched at %d\n", line);
                 }
             } else {
-                printf("No match (timeout)\n");
+                const char *reason = json_object_get_string(result, "reason");
+                printf("No match (%s)\n", reason ? reason : "unknown");
             }
         }
     } else {

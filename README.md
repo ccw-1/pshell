@@ -13,9 +13,10 @@ A lightweight, portable C-based programmable shell daemon with virtual terminal 
 - **Multiple PTY Sessions**: Manage multiple concurrent pseudo-terminal sessions (like tmux)
 - **VT100/xterm Emulation**: Full terminal emulation with screen buffer and configurable scrollback
 - **Scrollback Buffer**: Configurable scrollback buffer size (default 1000 lines) with API access to retrieve terminal history
+- **Expect Pattern Matching**: Dedicated expect buffer with line position tracking for reliable automation
 - **REST API**: Simple HTTP/REST API for external control (no external dependencies)
 - **Unix Socket Control**: Local control via Unix domain socket with `pshellctl` utility
-- **Pattern Matching**: POSIX regex-based expect-like automation
+- **Pattern Matching**: POSIX regex-based expect-like automation with dual-write architecture
 - **Web Interface**: Browser-based debugging and control interface
 - **Privilege Separation**: Sessions can run as specific users when daemon runs as root
 - **Configurable Default Shell**: Optional command parameter with configurable default shell
@@ -245,6 +246,12 @@ External Clients (REST/Web/pshellctl)
 
 - **[SECURITY.md](docs/SECURITY.md)** - Multi-user security considerations and best practices
 - **[ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)** - Environment variable configuration
+
+### 🔧 Technical Documentation
+
+- **[EXPECT_BUFFER_IMPLEMENTATION.md](EXPECT_BUFFER_IMPLEMENTATION.md)** - Expect buffer architecture and implementation details
+- **[MAINTENANCE.md](MAINTENANCE.md)** - Complete maintenance guide with debugging and troubleshooting
+- **[TODO.md](TODO.md)** - Known issues, future improvements, and feature roadmap
 
 ### Quick Links by Role
 
@@ -539,7 +546,7 @@ Inspired by:
 
 ## Status
 
-**Current Status**: Phase 9 Complete - Core Implementation Done ✅
+**Current Status**: Phase 10 Complete - Expect Buffer Feature Implemented ✅
 
 **Completed Phases**:
 - ✅ Phase 1-4: Core Infrastructure, HTTP Server, Unix Socket, Session Management
@@ -549,19 +556,28 @@ Inspired by:
 - ✅ Phase 8: Web Interface (HTML/CSS/JS frontend)
 - ✅ Phase 9: HTTP CLI Client (pshell-client)
 - ✅ Phase 10: Socket Control Utility (pshellctl)
+- ✅ **Expect Buffer Feature**: Dedicated buffer with dual-write architecture and line position tracking
 
-**Remaining Phases**:
+**Recent Updates (2026-08-02)**:
+- ✅ Implemented dedicated expect buffer to prevent data loss
+- ✅ Added dual-write system (raw buffer + expect buffer)
+- ✅ Implemented line position tracking (relative to cursor)
+- ✅ Fixed pattern matching reliability
+- ✅ Added comprehensive documentation (EXPECT_BUFFER_IMPLEMENTATION.md, MAINTENANCE.md, TODO.md)
+
+**Remaining Work**:
 - ⏳ Phase 11: Additional Testing & Integration Tests
 - ⏳ Phase 12: Final Documentation & Examples
+- ⏳ Known Issues: See [TODO.md](TODO.md) for improvement roadmap
 
-**Build Status**: All binaries compile and run successfully
-- `bin/pshell` - Main daemon (fully functional)
+**Build Status**: All binaries compile and run successfully ✅
+- `bin/pshell` - Main daemon (fully functional with expect buffer)
 - `bin/pshell-client` - HTTP CLI client (complete)
-- `bin/pshellctl` - Socket control utility (complete)
+- `bin/pshellctl` - Socket control utility (complete with line position display)
 
 See **[PROGRESS.md](PROGRESS.md)** for detailed implementation status.
 
 ---
 
-**Version**: 0.9.0 (beta)  
-**Last Updated**: 2026-07-17
+**Version**: 1.0.0 (expect buffer feature complete)  
+**Last Updated**: 2026-08-02

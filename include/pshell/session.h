@@ -271,6 +271,30 @@ size_t session_peek_raw_output(const session_t *session, char *buffer, size_t si
  * Clear raw PTY output buffer
  * @param session Session
  */
+
+/**
+ * Start expect operation - allocate and activate expect buffer
+ * @param session Session
+ * @return 0 on success, -1 on error
+ */
+int session_start_expect(session_t *session);
+
+/**
+ * Stop expect operation - deactivate expect buffer
+ * @param session Session
+ */
+void session_stop_expect(session_t *session);
+
+/**
+ * Read from expect buffer (non-destructive peek)
+ * @param session Session
+ * @param buffer Output buffer
+ * @param size Maximum bytes to read
+ * @return Number of bytes read
+ */
+ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size);
+
+
 void session_clear_raw_buffer(session_t *session);
 
 /**

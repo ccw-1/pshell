@@ -44,6 +44,22 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms) {
     ctx->buffer[0] = '\0';
     ctx->buffer_used = 0;
     
+    /* Activate expect buffer in session */
+    if (session_start_expect(session) < 0) {
+        log_error("Failed to start expect buffer");
+        free(ctx->buffer);
+        free(ctx);
+        return NULL;
+    }
+    
+    /* Read seeded data from session's expect buffer into context buffer */
+    ssize_t seeded = session_read_output(session, ctx->buffer, ctx->buffer_size - 1);
+    if (seeded > 0) {
+        ctx->buffer[seeded] = '\0';
+        ctx->buffer_used = seeded;
+        log_debug("Loaded %zd bytes of seeded data into expect context", seeded);
+    }
+    
     log_debug("Created expect context: timeout=%dms", timeout_ms);
     
     return ctx;
@@ -51,6 +67,11 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms) {
 
 void expect_context_destroy(expect_context_t *ctx) {
     if (!ctx) return;
+    
+    /* Deactivate expect buffer in session */
+    if (ctx->session) {
+        session_stop_expect(ctx->session);
+    }
     
     free(ctx->buffer);
     free(ctx);
@@ -111,6 +132,10 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
         
         /* Try to match current buffer */
         match_result_t match;
+        log_debug("Trying to match pattern '%s' in buffer (size=%zu): '%.100s%s'", 
+                  pattern, ctx->buffer_used, ctx->buffer, 
+                  ctx->buffer_used > 100 ? "..." : "");
+        
         if (pattern_matcher_match(matcher, ctx->buffer, &match)) {
             pattern_matcher_destroy(matcher);
             

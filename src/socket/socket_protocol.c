@@ -7,6 +7,7 @@
 #include "pshell/socket_server.h"
 #include "pshell/json_simple.h"
 #include "pshell/session.h"
+#include "pshell/expect_engine.h"
 #include "pshell/logger.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -432,11 +433,74 @@ static void handle_resize_session(socket_connection_t *conn, json_value_t *param
 }
 
 static void handle_expect_pattern(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
-    (void)params;
-    (void)mgr;
+    log_info("handle_expect_pattern called");
     
-    /* Not implemented yet */
-    send_error(conn, "Expect pattern not implemented");
+    if (!params) {
+        log_error("handle_expect_pattern: Missing params");
+        send_error(conn, "Missing params");
+        return;
+    }
+    
+    const char *session_id = json_object_get_string(params, "id");
+    const char *pattern = json_object_get_string(params, "pattern");
+    int timeout = json_object_get_int(params, "timeout", 30000);
+    bool case_sensitive = json_object_get_bool(params, "case_sensitive", true);
+    
+    log_info("handle_expect_pattern: session_id=%s, pattern=%s, timeout=%d", 
+             session_id ? session_id : "NULL", pattern ? pattern : "NULL", timeout);
+    
+    if (!session_id || !pattern) {
+        log_error("handle_expect_pattern: Missing session id or pattern");
+        send_error(conn, "Missing session id or pattern");
+        return;
+    }
+    
+    /* Get session */
+    session_t *session = session_manager_get(mgr, session_id);
+    if (!session) {
+        send_error(conn, "Session not found");
+        return;
+    }
+    
+    /* Create expect context */
+    expect_context_t *ctx = expect_context_create(session, timeout);
+    if (!ctx) {
+        send_error(conn, "Failed to create expect context");
+        return;
+    }
+    
+    /* Wait for pattern match */
+    match_result_t match;
+    expect_result_t result = expect_pattern(ctx, pattern, case_sensitive, &match);
+    
+    /* Build response */
+    char response[4096];
+    if (result == EXPECT_MATCHED) {
+        /* Calculate line position relative to current cursor */
+        const char *buffer = expect_get_buffer(ctx);
+        int matched_line = 0;
+        for (size_t i = 0; i < match.start && buffer[i]; i++) {
+            if (buffer[i] == '\n') matched_line++;
+        }
+        
+        int cursor_row, cursor_col;
+        session_get_cursor_position(session, &cursor_row, &cursor_col);
+        int relative_line = matched_line - cursor_row;
+        
+        snprintf(response, sizeof(response),
+                "{\"found\":true,\"matched_text\":\"%s\",\"start\":%zu,\"end\":%zu,\"line\":%d}",
+                match.matched_text ? match.matched_text : "", match.start, match.end, relative_line);
+        match_result_free(&match);
+    } else if (result == EXPECT_TIMEOUT) {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"timeout\"}");
+    } else if (result == EXPECT_EOF) {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"eof\"}");
+    } else {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"error\"}");
+    }
+    
+    expect_context_destroy(ctx);
+    send_success(conn, response);
 }
 
 static void handle_daemon_status(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
