@@ -14,6 +14,12 @@
  * responses automatically (like expect/tcl).
  */
 
+/* Expect flags */
+typedef enum {
+    EXPECT_FLAG_NONE = 0,
+    EXPECT_FLAG_SKIP_SEEDING = 1 << 0,  /* Don't seed from screen (incoming-only mode) */
+} expect_flags_t;
+
 /* Expect result */
 typedef enum {
     EXPECT_MATCHED,         /* Pattern matched */
@@ -24,21 +30,25 @@ typedef enum {
 
 /* Expect context */
 typedef struct {
-    session_t *session;     /* Session to monitor */
-    char *buffer;           /* Accumulated output buffer */
-    size_t buffer_size;     /* Buffer size */
-    size_t buffer_used;     /* Bytes used in buffer */
-    time_t start_time;      /* Start time for timeout */
-    int timeout_ms;         /* Timeout in milliseconds */
+    session_t *session;             /* Session to monitor */
+    char *buffer;                   /* Accumulated output buffer */
+    size_t buffer_size;             /* Buffer size */
+    size_t buffer_used;             /* Bytes used in buffer */
+    time_t start_time;              /* Start time for timeout */
+    int timeout_ms;                 /* Timeout in milliseconds */
+    expect_flags_t flags;           /* Expect flags (seeding, etc.) */
+    session_line_no_t snapshot_line; /* Session line snapshot taken when expect starts */
+    size_t snapshot_offset;         /* Byte offset within snapshot_line when expect starts */
 } expect_context_t;
 
 /**
  * Create expect context
  * @param session Session to monitor
  * @param timeout_ms Timeout in milliseconds (0 = no timeout)
+ * @param flags Expect flags (EXPECT_FLAG_NONE for default behavior)
  * @return Context or NULL on error
  */
-expect_context_t *expect_context_create(session_t *session, int timeout_ms);
+expect_context_t *expect_context_create(session_t *session, int timeout_ms, expect_flags_t flags);
 
 /**
  * Destroy expect context

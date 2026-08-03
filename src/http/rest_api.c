@@ -424,7 +424,7 @@ static void handle_expect_pattern(http_request_t *req, http_response_t *resp, vo
     }
     
     /* Create expect context */
-    expect_context_t *ctx = expect_context_create(session, timeout);
+    expect_context_t *ctx = expect_context_create(session, timeout, EXPECT_FLAG_NONE);
     if (!ctx) {
         json_free(json);
         free(session_id);

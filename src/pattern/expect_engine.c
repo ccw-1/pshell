@@ -16,7 +16,7 @@ static long long get_time_ms(void) {
     return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-expect_context_t *expect_context_create(session_t *session, int timeout_ms) {
+expect_context_t *expect_context_create(session_t *session, int timeout_ms, expect_flags_t flags) {
     if (!session) {
         log_error("Invalid session");
         return NULL;
@@ -31,6 +31,9 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms) {
     ctx->session = session;
     ctx->timeout_ms = timeout_ms;
     ctx->start_time = time(NULL);
+    ctx->flags = flags;
+    ctx->snapshot_line = session_get_current_line_no(session);
+    ctx->snapshot_offset = 0;
     
     /* Allocate buffer */
     ctx->buffer_size = EXPECT_BUFFER_SIZE;
@@ -45,22 +48,37 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms) {
     ctx->buffer_used = 0;
     
     /* Activate expect buffer in session */
-    if (session_start_expect(session) < 0) {
+    bool skip_seeding = (flags & EXPECT_FLAG_SKIP_SEEDING) != 0;
+    if (session_start_expect(session, skip_seeding) < 0) {
         log_error("Failed to start expect buffer");
         free(ctx->buffer);
         free(ctx);
         return NULL;
     }
     
-    /* Read seeded data from session's expect buffer into context buffer */
-    ssize_t seeded = session_read_output(session, ctx->buffer, ctx->buffer_size - 1);
-    if (seeded > 0) {
-        ctx->buffer[seeded] = '\0';
-        ctx->buffer_used = seeded;
-        log_debug("Loaded %zd bytes of seeded data into expect context", seeded);
+    /* Conditionally seed buffer based on flags */
+    if (!(flags & EXPECT_FLAG_SKIP_SEEDING)) {
+        /* Read seeded data from session's expect buffer into context buffer */
+        ssize_t seeded = session_read_expect_output(session, ctx->buffer, ctx->buffer_size - 1,
+                                                    1, 0, NULL, NULL);
+        if (seeded > 0) {
+            ctx->buffer[seeded] = '\0';
+            ctx->buffer_used = seeded;
+            log_debug("Loaded %zd bytes of seeded data into expect context", seeded);
+        }
+    } else {
+        session_line_no_t current_line = 1;
+        size_t current_offset = 0;
+        (void)session_read_expect_output(session, ctx->buffer, 0,
+                                         ctx->snapshot_line, ctx->snapshot_offset,
+                                         &current_line, &current_offset);
+        ctx->snapshot_line = current_line;
+        ctx->snapshot_offset = current_offset;
+        log_debug("Incoming-only mode: snapshot line=%lu offset=%zu",
+                  (unsigned long)ctx->snapshot_line, ctx->snapshot_offset);
     }
     
-    log_debug("Created expect context: timeout=%dms", timeout_ms);
+    log_debug("Created expect context: timeout=%dms, flags=0x%x", timeout_ms, flags);
     
     return ctx;
 }
@@ -121,7 +139,10 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
         return EXPECT_ERROR;
     }
     
-    /* Read and match loop */
+    /* Read and match loop with exponential backoff */
+    int sleep_us = 10000;  /* Start with 10ms */
+    const int max_sleep_us = 100000;  /* Cap at 100ms */
+    
     while (1) {
         /* Check timeout */
         if (expect_is_timeout(ctx)) {
@@ -149,14 +170,21 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
             return EXPECT_MATCHED;
         }
         
-        /* Read more output */
+        /* Read accumulated expect output */
         char read_buf[EXPECT_READ_SIZE];
-        ssize_t n = session_read_output(ctx->session, read_buf, sizeof(read_buf) - 1);
+        session_line_no_t next_line = ctx->snapshot_line;
+        size_t next_offset = ctx->snapshot_offset;
+        ssize_t n = session_read_expect_output(ctx->session, read_buf, sizeof(read_buf) - 1,
+                                               (ctx->flags & EXPECT_FLAG_SKIP_SEEDING) ? ctx->snapshot_line : 1,
+                                               (ctx->flags & EXPECT_FLAG_SKIP_SEEDING) ? ctx->snapshot_offset : 0,
+                                               &next_line, &next_offset);
         
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                /* No data available, sleep briefly */
-                usleep(10000);  /* 10ms */
+                /* No data available, sleep with exponential backoff */
+                log_debug("No data available, sleeping %dus", sleep_us);
+                usleep(sleep_us);
+                sleep_us = (sleep_us * 2 < max_sleep_us) ? sleep_us * 2 : max_sleep_us;
                 continue;
             }
             
@@ -167,17 +195,28 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
         }
         
         if (n == 0) {
-            /* Check if session is still alive */
             if (!session_is_alive(ctx->session)) {
                 pattern_matcher_destroy(matcher);
                 log_debug("Session closed (EOF)");
                 return EXPECT_EOF;
             }
             
-            /* No data but session alive, sleep briefly */
-            usleep(10000);  /* 10ms */
+            log_debug("No new data yet, sleeping %dus", sleep_us);
+            usleep(sleep_us);
+            sleep_us = (sleep_us * 2 < max_sleep_us) ? sleep_us * 2 : max_sleep_us;
             continue;
         }
+        
+        log_debug("Read %zd bytes from expect buffer: '%.50s%s'", 
+                  n, read_buf, n > 50 ? "..." : "");
+        
+        if (ctx->flags & EXPECT_FLAG_SKIP_SEEDING) {
+            ctx->snapshot_line = next_line;
+            ctx->snapshot_offset = next_offset;
+        }
+        
+        /* Got data, reset backoff */
+        sleep_us = 10000;
         
         /* Append to buffer */
         read_buf[n] = '\0';
@@ -267,7 +306,10 @@ expect_result_t expect_any(expect_context_t *ctx, const char **patterns,
         
         /* Read more output */
         char read_buf[EXPECT_READ_SIZE];
-        ssize_t n = session_read_output(ctx->session, read_buf, sizeof(read_buf) - 1);
+        session_line_no_t next_line = ctx->snapshot_line;
+        size_t next_offset = ctx->snapshot_offset;
+        ssize_t n = session_read_expect_output(ctx->session, read_buf, sizeof(read_buf) - 1,
+                                               1, 0, &next_line, &next_offset);
         
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -371,7 +413,7 @@ expect_result_t expect_send_and_wait(session_t *session, const char *send_text,
     }
     
     /* Create expect context */
-    expect_context_t *ctx = expect_context_create(session, timeout_ms);
+    expect_context_t *ctx = expect_context_create(session, timeout_ms, EXPECT_FLAG_NONE);
     if (!ctx) {
         return EXPECT_ERROR;
     }

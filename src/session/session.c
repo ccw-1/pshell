@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <stdio.h>
 
 #define MAX_SESSIONS 100
 #define RAW_BUFFER_SIZE (64 * 1024)  /* 64KB circular buffer for raw PTY output */
@@ -48,6 +49,8 @@ struct session {
     size_t expect_buffer_size;
     size_t expect_buffer_used;
     bool expect_active;
+    session_line_no_t current_line_no;
+    size_t current_line_offset;
     
     /* Output logging */
     char output_file[512];
@@ -316,13 +319,30 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                 }
             }
             
+            for (ssize_t i = 0; i < n; i++) {
+                if (buffer[i] == '\n') {
+                    session->current_line_no++;
+                    session->current_line_offset = 0;
+                } else {
+                    session->current_line_offset++;
+                }
+            }
+            
             /* Also write to expect buffer if expect is active */
             if (session->expect_active && session->expect_buffer) {
+                size_t before = session->expect_buffer_used;
                 for (ssize_t i = 0; i < n; i++) {
                     if (session->expect_buffer_used < session->expect_buffer_size) {
                         session->expect_buffer[session->expect_buffer_used++] = buffer[i];
                     }
                 }
+                log_debug("PTY callback: wrote %zu bytes to expect_buffer (was %zu, now %zu), line=%lu offset=%zu", 
+                          session->expect_buffer_used - before, before, session->expect_buffer_used,
+                          (unsigned long)session->current_line_no, session->current_line_offset);
+            } else {
+                log_debug("PTY callback: NOT writing to expect_buffer (active=%d, buffer=%p), line=%lu offset=%zu",
+                          session->expect_active, (void*)session->expect_buffer,
+                          (unsigned long)session->current_line_no, session->current_line_offset);
             }
             
             /* Parse VT100 sequences and update screen buffer */
@@ -461,6 +481,10 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     session->output_buffer = NULL;
     session->output_buffer_used = 0;
     session->output_buffer_size = 0;
+    
+    /* Initialize monotonic line tracking */
+    session->current_line_no = 1;
+    session->current_line_offset = 0;
     
     /* Initialize output rotation (disabled by default) */
     session->rotate_count = 0;
@@ -709,7 +733,7 @@ ssize_t session_read_output(session_t *session, char *buffer, size_t size) {
     
     /* If expect is active, read from expect buffer instead */
     if (session->expect_active) {
-        return session_read_expect_output(session, buffer, size);
+        return session_read_expect_output(session, buffer, size, 1, 0, NULL, NULL);
     }
     
     if (!session->raw_buffer) {
@@ -894,7 +918,7 @@ size_t session_peek_raw_output(const session_t *session, char *buffer, size_t si
  * @param session Session
  * @return 0 on success, -1 on error
  */
-int session_start_expect(session_t *session) {
+int session_start_expect(session_t *session, bool skip_seeding) {
     if (!session) {
         return -1;
     }
@@ -914,9 +938,9 @@ int session_start_expect(session_t *session) {
         }
     }
     
-    /* Seed expect buffer with screen buffer content instead of raw buffer */
-    session->expect_buffer_used = 0;
-    if (session->screen) {
+    /* Conditionally seed expect buffer based on skip_seeding flag */
+    if (!skip_seeding && session->screen) {
+        session->expect_buffer_used = 0;
         char screen_text[65536];
         size_t screen_len = screen_buffer_get_text(session->screen, screen_text, sizeof(screen_text) - 1);
         
@@ -933,11 +957,17 @@ int session_start_expect(session_t *session) {
         } else {
             log_debug("Screen buffer empty, expect buffer not seeded");
         }
+    } else if (skip_seeding) {
+        /* Incoming-only mode: start with an empty expect buffer so only
+         * PTY output arriving after expect activation is matched. */
+        session->expect_buffer_used = 0;
+        session->expect_buffer[0] = '\0';
+        log_debug("Incoming-only mode: cleared expect buffer, waiting for new data only");
     }
     
     session->expect_active = true;
     
-    log_debug("Started expect for session %s", session->id);
+    log_debug("Started expect for session %s (skip_seeding=%d)", session->id, skip_seeding);
     return 0;
 }
 
@@ -956,6 +986,31 @@ void session_stop_expect(session_t *session) {
     log_debug("Stopped expect for session %s", session->id);
 }
 
+
+/**
+ * Clear expect buffer contents
+ * @param session Session
+ */
+void session_clear_expect_buffer(session_t *session) {
+    if (!session || !session->expect_buffer) {
+        return;
+    }
+    
+    session->expect_buffer_used = 0;
+    session->expect_buffer[0] = '\0';
+    
+    log_debug("Cleared expect buffer for session %s", session->id);
+}
+
+session_line_no_t session_get_current_line_no(const session_t *session) {
+    if (!session) {
+        return 1;
+    }
+    
+    return session->current_line_no;
+}
+
+
 /**
  * Read from expect buffer (non-destructive peek)
  * @param session Session
@@ -963,7 +1018,9 @@ void session_stop_expect(session_t *session) {
  * @param size Maximum bytes to read
  * @return Number of bytes read
  */
-ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size) {
+ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size,
+                                   session_line_no_t start_line, size_t start_offset,
+                                   session_line_no_t *next_line, size_t *next_offset) {
     if (!session || !buffer || size == 0) {
         return -1;
     }
@@ -974,14 +1031,43 @@ ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size
         return -1;
     }
     
-    /* Return all accumulated data */
-    size_t to_copy = (size < session->expect_buffer_used) ? size : session->expect_buffer_used;
+    if (next_line) {
+        *next_line = session->current_line_no;
+    }
+    if (next_offset) {
+        *next_offset = session->current_line_offset;
+    }
     
-    log_debug("session_read_expect_output: returning %zu bytes (buffer_used=%zu)", 
-              to_copy, session->expect_buffer_used);
+    size_t start_index = 0;
+    session_line_no_t line_no = start_line;
+    size_t line_offset = 0;
+    
+    while (start_index < session->expect_buffer_used) {
+        if (line_no > start_line || (line_no == start_line && line_offset >= start_offset)) {
+            break;
+        }
+        
+        if (session->expect_buffer[start_index] == '\n') {
+            line_no++;
+            line_offset = 0;
+        } else {
+            line_offset++;
+        }
+        start_index++;
+    }
+    
+    size_t available = (start_index < session->expect_buffer_used)
+        ? (session->expect_buffer_used - start_index)
+        : 0;
+    size_t to_copy = (size < available) ? size : available;
+    
+    log_debug("session_read_expect_output: returning %zu bytes from index %zu (buffer_used=%zu, start_line=%lu, start_offset=%zu, current_line=%lu, current_offset=%zu)",
+              to_copy, start_index, session->expect_buffer_used,
+              (unsigned long)start_line, start_offset,
+              (unsigned long)session->current_line_no, session->current_line_offset);
     
     if (to_copy > 0) {
-        memcpy(buffer, session->expect_buffer, to_copy);
+        memcpy(buffer, session->expect_buffer + start_index, to_copy);
     }
     
     return (ssize_t)to_copy;

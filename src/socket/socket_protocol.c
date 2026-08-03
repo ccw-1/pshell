@@ -29,6 +29,7 @@ static void handle_get_output(socket_connection_t *conn, json_value_t *params, s
 static void handle_get_screen(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 static void handle_resize_session(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 static void handle_expect_pattern(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
+static void handle_expect_pattern_incoming(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 static void handle_get_scrollback(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 
 static void handle_daemon_status(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
@@ -121,6 +122,8 @@ void socket_protocol_handler(socket_connection_t *conn, const char *message, voi
         handle_resize_session(conn, params, mgr);
     } else if (strcmp(method, "expect_pattern") == 0) {
         handle_expect_pattern(conn, params, mgr);
+    } else if (strcmp(method, "expect_pattern_incoming") == 0) {
+        handle_expect_pattern_incoming(conn, params, mgr);
     } else if (strcmp(method, "daemon_status") == 0) {
         handle_daemon_status(conn, params, mgr);
     } else {
@@ -463,7 +466,67 @@ static void handle_expect_pattern(socket_connection_t *conn, json_value_t *param
     }
     
     /* Create expect context */
-    expect_context_t *ctx = expect_context_create(session, timeout);
+    expect_context_t *ctx = expect_context_create(session, timeout, EXPECT_FLAG_NONE);
+    if (!ctx) {
+        send_error(conn, "Failed to create expect context");
+        return;
+    }
+    
+    /* Wait for pattern match */
+    match_result_t match;
+    expect_result_t result = expect_pattern(ctx, pattern, case_sensitive, &match);
+    
+    /* Build response */
+    char response[4096];
+    if (result == EXPECT_MATCHED) {
+        /* Calculate line position relative to current cursor */
+        const char *buffer = expect_get_buffer(ctx);
+        int matched_line = 0;
+        for (size_t i = 0; i < match.start && buffer[i]; i++) {
+            if (buffer[i] == '\n') matched_line++;
+        }
+        
+        int cursor_row, cursor_col;
+        session_get_cursor_position(session, &cursor_row, &cursor_col);
+        int relative_line = matched_line - cursor_row;
+        
+        snprintf(response, sizeof(response),
+                "{\"found\":true,\"matched_text\":\"%s\",\"start\":%zu,\"end\":%zu,\"line\":%d}",
+                match.matched_text ? match.matched_text : "", match.start, match.end, relative_line);
+        match_result_free(&match);
+    } else if (result == EXPECT_TIMEOUT) {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"timeout\"}");
+    } else if (result == EXPECT_EOF) {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"eof\"}");
+    } else {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"error\"}");
+    }
+    
+    expect_context_destroy(ctx);
+    send_success(conn, response);
+}
+
+static void handle_expect_pattern_incoming(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
+    /* Get parameters */
+    const char *session_id = json_object_get_string(params, "session_id");
+    const char *pattern = json_object_get_string(params, "pattern");
+    int timeout = json_object_get_int(params, "timeout", 5000);
+    bool case_sensitive = json_object_get_bool(params, "case_sensitive", true);
+    
+    if (!session_id || !pattern) {
+        send_error(conn, "Missing required parameters");
+        return;
+    }
+    
+    /* Get session */
+    session_t *session = session_manager_get(mgr, session_id);
+    if (!session) {
+        send_error(conn, "Session not found");
+        return;
+    }
+    
+    /* Create expect context with SKIP_SEEDING flag (incoming-only mode) */
+    expect_context_t *ctx = expect_context_create(session, timeout, EXPECT_FLAG_SKIP_SEEDING);
     if (!ctx) {
         send_error(conn, "Failed to create expect context");
         return;

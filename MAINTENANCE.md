@@ -71,14 +71,25 @@ See `EXPECT_BUFFER_IMPLEMENTATION.md` for detailed documentation.
 
 **Key Points:**
 - Dual-write architecture: PTY output goes to both raw buffer and expect buffer
-- Expect buffer is seeded from screen content on activation
-- Pattern matching reads from expect buffer (non-destructive)
-- Line position tracking relative to cursor
+- Regular `expect` seeds from current screen content, then continues matching new PTY output
+- Incoming-only `expect-incoming` does not seed from historical screen content
+- Incoming-only matching uses a monotonic per-session line counter plus byte offset within the current line
+- Pattern matching reads from the expect buffer using line/offset snapshots rather than fragile buffer-baseline arithmetic
+- Partial current-line data is eligible for incoming-only matching if it arrives after the snapshot
+
+**Incoming-Only Maintenance Notes:**
+1. `session.c` maintains `current_line_no` and `current_line_offset` on every PTY read
+2. `expect_context_create()` snapshots the current line/offset for incoming-only mode
+3. `session_read_expect_output()` returns only bytes newer than a supplied line/offset snapshot
+4. After each successful incoming-only read, `expect_engine.c` advances the snapshot so the same bytes are not re-read
+5. Earlier lines may roll off buffers; incoming-only correctness depends on the monotonic counter, not buffer-relative positions
 
 **Common Issues:**
-1. **Pattern not found**: Check if expect buffer was seeded correctly
-2. **Wrong line position**: VT100 sequences may affect line counting
-3. **Buffer overflow**: Expect buffer is 64KB, may lose old data
+1. **Pattern not found**: Check whether the caller used `expect` vs `expect-incoming`
+2. **Incoming-only matches historical data**: Verify snapshot line/offset is captured after expect activation
+3. **Incoming-only misses partial prompt text**: Verify `current_line_offset` is advancing and the snapshot offset is updated after reads
+4. **Wrong line position**: VT100 sequences may affect line counting
+5. **Buffer overflow**: Expect buffer is 64KB, may lose old data
 
 ## Debugging
 
@@ -185,6 +196,19 @@ sleep 2
 # Expected: Matched: "PATTERN" at -N
 ```
 
+**Incoming-Only Expect Test:**
+```bash
+SESSION_ID=$(./bin/pshellctl -s /tmp/pshell.sock create --command bash)
+./bin/pshellctl -s /tmp/pshell.sock send "$SESSION_ID" "echo ALREADY_HERE\n"
+sleep 2
+./bin/pshellctl -s /tmp/pshell.sock expect-incoming "$SESSION_ID" "ALREADY_HERE" 1000
+# Expected: timeout (historical output ignored)
+
+./bin/pshellctl -s /tmp/pshell.sock send "$SESSION_ID" "printf PARTIAL\n"
+./bin/pshellctl -s /tmp/pshell.sock expect-incoming "$SESSION_ID" "PARTIAL" 5000
+# Expected: match from newly arrived data only
+```
+
 ### Automated Testing
 
 Create test script `tests/test_expect.sh`:
@@ -220,6 +244,11 @@ kill $DAEMON_PID
 - **Issue**: Buffer is 64KB, may lose old data
 - **Workaround**: Use shorter expect timeouts, match recent output
 - **Fix**: TODO - Implement dynamic buffer expansion
+
+### 1a. Incoming-Only Snapshot Semantics
+- **Issue**: Incoming-only behavior now depends on monotonic line/offset snapshots, not raw buffer positions
+- **Workaround**: When debugging, inspect line/offset-related log messages rather than buffer-relative assumptions
+- **Fix**: Current design is intentional; preserve snapshot advancement semantics when refactoring
 
 ### 2. Line Position Accuracy
 - **Issue**: VT100 escape sequences affect line counting
@@ -372,6 +401,11 @@ valgrind --leak-check=full --show-leak-kinds=all \
 - Issues: Check logs first, then review known issues
 
 ## Version History
+
+- **1.1** (2026-08-03): Incoming-only expect reliability fix
+  - Replaced fragile baseline tracking with monotonic session line/offset snapshots
+  - Added partial current-line support for incoming-only matching
+  - Updated expect buffer read API for snapshot-based reads
 
 - **1.0** (2026-08-02): Initial release with expect buffer feature
   - Dedicated expect buffer architecture

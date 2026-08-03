@@ -14,6 +14,7 @@
 
 typedef struct session session_t;
 typedef struct session_manager session_manager_t;
+typedef unsigned long session_line_no_t;
 
 /* Session state */
 typedef enum {
@@ -275,9 +276,10 @@ size_t session_peek_raw_output(const session_t *session, char *buffer, size_t si
 /**
  * Start expect operation - allocate and activate expect buffer
  * @param session Session
+ * @param skip_seeding If true, don't seed buffer from screen (incoming-only mode)
  * @return 0 on success, -1 on error
  */
-int session_start_expect(session_t *session);
+int session_start_expect(session_t *session, bool skip_seeding);
 
 /**
  * Stop expect operation - deactivate expect buffer
@@ -286,14 +288,35 @@ int session_start_expect(session_t *session);
 void session_stop_expect(session_t *session);
 
 /**
+ * Clear expect buffer contents
+ * @param session Session
+ */
+void session_clear_expect_buffer(session_t *session);
+
+/**
+ * Get the current monotonic line counter for the session.
+ * The counter starts at 1 and increments whenever a newline is read from the PTY.
+ * @param session Session
+ * @return Current session line number
+ */
+session_line_no_t session_get_current_line_no(const session_t *session);
+
+/**
  * Read from expect buffer (non-destructive peek)
  * @param session Session
  * @param buffer Output buffer
  * @param size Maximum bytes to read
+ * @param start_line Exclusive lower bound for incoming-only reads; only data from
+ *        lines greater than this snapshot line is returned, plus partial data that
+ *        arrives on the snapshot line after the snapshot byte offset.
+ * @param start_offset Byte offset within start_line for partial-line incoming reads
+ * @param next_line Output current line snapshot after the read (optional)
+ * @param next_offset Output current byte offset within the current line after the read (optional)
  * @return Number of bytes read
  */
-ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size);
-
+ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size,
+                                   session_line_no_t start_line, size_t start_offset,
+                                   session_line_no_t *next_line, size_t *next_offset);
 
 void session_clear_raw_buffer(session_t *session);
 

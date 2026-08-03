@@ -30,6 +30,7 @@ static int cmd_output(socket_client_t *client, int argc, char **argv);
 static int cmd_screen(socket_client_t *client, int argc, char **argv);
 static int cmd_resize(socket_client_t *client, int argc, char **argv);
 static int cmd_expect(socket_client_t *client, int argc, char **argv);
+static int cmd_expect_incoming(socket_client_t *client, int argc, char **argv);
 static int cmd_scrollback(socket_client_t *client, int argc, char **argv);
 
 static int cmd_destroy(socket_client_t *client, int argc, char **argv);
@@ -67,6 +68,12 @@ static void print_usage(const char *prog) {
     printf("        Special: \\HOME \\END \\INS \\DEL \\PGUP \\PGDN\n");
     printf("        Shift+keys: \\SHIFT_UP \\SHIFT_F1 \\SHIFT_TAB\n");
     printf("        Numeric: \\x03 (hex) \\033 (octal)\n");
+    printf("\n");
+    printf("  expect <session-id> <pattern> <timeout-ms>\n");
+    printf("      Wait for pattern in output (matches historical + new data)\n");
+    printf("\n");
+    printf("  expect-incoming <session-id> <pattern> <timeout-ms>\n");
+    printf("      Wait for pattern in NEW output only (ignores historical data)\n");
     printf("\n");
     printf("  output <session-id>\n");
     printf("      Read output from session\n");
@@ -582,6 +589,64 @@ static int cmd_scrollback(socket_client_t *client, int argc, char **argv) {
     return 0;
 }
 
+static int cmd_expect_incoming(socket_client_t *client, int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: pshellctl expect-incoming <session-id> <pattern> <timeout-ms>\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    const char *pattern = argv[1];
+    int timeout = atoi(argv[2]);
+    
+    /* Build request */
+    char request[4096];
+    snprintf(request, sizeof(request),
+            "{\"method\":\"expect_pattern_incoming\",\"params\":{\"session_id\":\"%s\",\"pattern\":\"%s\",\"timeout\":%d,\"case_sensitive\":true}}",
+            session_id, pattern, timeout);
+    
+    /* Send request */
+    char response[8192];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            bool found = json_object_get_bool(result, "found", false);
+            if (found) {
+                const char *matched_text = json_object_get_string(result, "matched_text");
+                int line = json_object_get_int(result, "line", 0);
+                if (matched_text) {
+                    printf("Matched: \"%s\" at %d (incoming-only)\n", matched_text, line);
+                } else {
+                    printf("Pattern matched at %d (incoming-only)\n", line);
+                }
+            } else {
+                const char *reason = json_object_get_string(result, "reason");
+                printf("No match (%s)\n", reason ? reason : "unknown");
+            }
+        }
+    } else {
+        fprintf(stderr, "Expect failed\n");
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
 static int cmd_expect(socket_client_t *client, int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: expect <session-id> <pattern> [timeout_ms]\n");
@@ -886,6 +951,8 @@ int main(int argc, char **argv) {
         result = cmd_resize(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "expect") == 0) {
         result = cmd_expect(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "expect-incoming") == 0) {
+        result = cmd_expect_incoming(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "destroy") == 0) {
         result = cmd_destroy(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "status") == 0) {
