@@ -46,6 +46,7 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms, expe
     
     ctx->buffer[0] = '\0';
     ctx->buffer_used = 0;
+    ctx->cancelled = false;
     
     /* Activate expect buffer in session */
     bool skip_seeding = (flags & EXPECT_FLAG_SKIP_SEEDING) != 0;
@@ -94,6 +95,14 @@ void expect_context_destroy(expect_context_t *ctx) {
     free(ctx->buffer);
     free(ctx);
 }
+
+void expect_cancel(expect_context_t *ctx) {
+    if (!ctx) return;
+    ctx->cancelled = true;
+    log_debug("Expect context cancelled");
+}
+
+
 
 bool expect_is_timeout(const expect_context_t *ctx) {
     if (!ctx || ctx->timeout_ms <= 0) {
@@ -144,6 +153,13 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
     const int max_sleep_us = 100000;  /* Cap at 100ms */
     
     while (1) {
+        /* Check cancellation */
+        if (ctx->cancelled) {
+            pattern_matcher_destroy(matcher);
+            log_debug("Expect operation cancelled");
+            return EXPECT_ERROR;
+        }
+        
         /* Check timeout */
         if (expect_is_timeout(ctx)) {
             pattern_matcher_destroy(matcher);

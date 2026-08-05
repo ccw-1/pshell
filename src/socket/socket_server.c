@@ -1,4 +1,5 @@
 #include "pshell/socket_server.h"
+#include "pshell/expect_engine.h"
 #include "pshell/logger.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@ struct socket_connection {
     int fd;
     char buffer[BUFFER_SIZE];
     size_t buffer_len;
+    void *expect_ctx;  /* Active expect_context_t pointer (for cancellation on disconnect) */
 };
 
 /* Socket server structure */
@@ -269,10 +271,16 @@ bool socket_server_handle_connection(socket_server_t *server) {
     conn.fd = client_fd;
     memcpy(conn.buffer, buffer, n + 1);
     conn.buffer_len = n;
+    conn.expect_ctx = NULL;
     
     /* Call handler */
     if (server->handler) {
         server->handler(&conn, buffer, server->user_data);
+    }
+    
+    /* Cancel any active expect operation before closing */
+    if (conn.expect_ctx) {
+        expect_cancel((expect_context_t*)conn.expect_ctx);
     }
     
     /* Ensure data is sent before closing */
@@ -306,4 +314,9 @@ bool socket_connection_send(socket_connection_t *conn, const char *message) {
 
 int socket_connection_get_fd(const socket_connection_t *conn) {
     return conn ? conn->fd : -1;
+}
+
+void socket_connection_set_expect_ctx(socket_connection_t *conn, void *ctx) {
+    if (!conn) return;
+    conn->expect_ctx = ctx;
 }

@@ -481,9 +481,15 @@ static void handle_expect_pattern(socket_connection_t *conn, json_value_t *param
         return;
     }
     
+    /* Track expect context in connection for cancellation on disconnect */
+    socket_connection_set_expect_ctx(conn, ctx);
+    
     /* Wait for pattern match */
     match_result_t match;
     expect_result_t result = expect_pattern(ctx, pattern, case_sensitive, &match);
+    
+    /* Clear expect context tracking */
+    socket_connection_set_expect_ctx(conn, NULL);
     
     /* Build response */
     char response[4096];
@@ -541,9 +547,15 @@ static void handle_expect_pattern_incoming(socket_connection_t *conn, json_value
         return;
     }
     
+    /* Track expect context in connection for cancellation on disconnect */
+    socket_connection_set_expect_ctx(conn, ctx);
+    
     /* Wait for pattern match */
     match_result_t match;
     expect_result_t result = expect_pattern(ctx, pattern, case_sensitive, &match);
+    
+    /* Clear expect context tracking */
+    socket_connection_set_expect_ctx(conn, NULL);
     
     /* Build response */
     char response[4096];

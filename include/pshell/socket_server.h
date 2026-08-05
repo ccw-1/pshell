@@ -87,4 +87,13 @@ bool socket_connection_send(socket_connection_t *conn, const char *message);
  */
 int socket_connection_get_fd(const socket_connection_t *conn);
 
+/**
+ * Set expect context for connection (for cancellation on disconnect)
+ * @param conn Connection
+ * @param ctx Expect context pointer (or NULL to clear)
+ */
+void socket_connection_set_expect_ctx(socket_connection_t *conn, void *ctx);
+
+
+
 #endif /* PSHELL_SOCKET_SERVER_H */

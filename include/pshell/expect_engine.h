@@ -39,6 +39,7 @@ typedef struct {
     expect_flags_t flags;           /* Expect flags (seeding, etc.) */
     session_line_no_t snapshot_line; /* Session line snapshot taken when expect starts */
     size_t snapshot_offset;         /* Byte offset within snapshot_line when expect starts */
+    volatile bool cancelled;        /* Cancellation flag (set when client disconnects) */
 } expect_context_t;
 
 /**
@@ -137,5 +138,14 @@ expect_result_t expect_send_and_wait(session_t *session, const char *send_text,
  * @return Result name string
  */
 const char *expect_result_name(expect_result_t result);
+
+
+/**
+ * Cancel an ongoing expect operation
+ * Thread-safe: Can be called from any thread to interrupt expect_pattern()
+ * @param ctx Expect context to cancel
+ */
+void expect_cancel(expect_context_t *ctx);
+
 
 #endif /* PSHELL_EXPECT_ENGINE_H */
