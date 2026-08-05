@@ -33,6 +33,9 @@ static int cmd_expect(socket_client_t *client, int argc, char **argv);
 static int cmd_expect_incoming(socket_client_t *client, int argc, char **argv);
 static int cmd_scrollback(socket_client_t *client, int argc, char **argv);
 
+static int cmd_lines(socket_client_t *client, int argc, char **argv);
+
+
 static int cmd_destroy(socket_client_t *client, int argc, char **argv);
 static int cmd_status(socket_client_t *client, int argc, char **argv);
 static int cmd_generate_key(int argc, char **argv);
@@ -85,6 +88,13 @@ static void print_usage(const char *prog) {
     printf("      Get scrollback buffer lines (terminal history)\n");
     printf("      --start: Starting line index (default: 0)\n");
     printf("      --count: Number of lines to retrieve (default: 100)\n");
+    printf("\n");
+    printf("  lines <session-id> --start <n> --end <n>\n");
+    printf("      Get line range from output log (works across rotated files)\n");
+    printf("      --start: Starting line number (1-based, inclusive)\n");
+    printf("      --end: Ending line number (1-based, inclusive)\n");
+    printf("      --tail <n>: Get last n lines (alternative to --start/--end)\n");
+    printf("      --head <n>: Get first n lines (alternative to --start/--end)\n");
     printf("\n");
     printf("  resize <session-id> <rows> <cols>\n");
     printf("      Resize terminal\n");
@@ -589,6 +599,119 @@ static int cmd_scrollback(socket_client_t *client, int argc, char **argv) {
     return 0;
 }
 
+static int cmd_lines(socket_client_t *client, int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "Usage: lines <session-id> --start <n> --end <n>\n");
+        fprintf(stderr, "   or: lines <session-id> --tail <n>\n");
+        fprintf(stderr, "   or: lines <session-id> --head <n>\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    int start_line = 0;
+    int end_line = 0;
+    int tail_lines = 0;
+    int head_lines = 0;
+    
+    /* Parse arguments */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--start") == 0 && i + 1 < argc) {
+            start_line = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--end") == 0 && i + 1 < argc) {
+            end_line = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--tail") == 0 && i + 1 < argc) {
+            tail_lines = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--head") == 0 && i + 1 < argc) {
+            head_lines = atoi(argv[++i]);
+        }
+    }
+    
+    /* Validate arguments */
+    if (tail_lines > 0) {
+        /* Get total lines first to calculate range */
+        char info_request[512];
+        snprintf(info_request, sizeof(info_request),
+                 "{\"method\":\"get_lines\",\"params\":{\"id\":\"%s\",\"start_line\":1,\"end_line\":1}}",
+                 session_id);
+        
+        char info_response[16384];
+        if (socket_client_send_request(client, info_request, info_response, sizeof(info_response)) < 0) {
+            fprintf(stderr, "Failed to get session info\n");
+            return 1;
+        }
+        
+        json_value_t *info_root = json_parse(info_response);
+        if (!info_root) {
+            fprintf(stderr, "Failed to parse response\n");
+            return 1;
+        }
+        
+        json_value_t *info_result = json_object_get(info_root, "result");
+        if (info_result) {
+            int total_lines = json_object_get_int(info_result, "total_lines", 0);
+            start_line = (total_lines > tail_lines) ? (total_lines - tail_lines + 1) : 1;
+            end_line = total_lines;
+        }
+        json_free(info_root);
+    } else if (head_lines > 0) {
+        start_line = 1;
+        end_line = head_lines;
+    } else if (start_line == 0 || end_line == 0) {
+        fprintf(stderr, "Must specify --start/--end, --tail, or --head\n");
+        return 1;
+    }
+    
+    /* Build request */
+    char request[1024];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"get_lines\",\"params\":{\"id\":\"%s\",\"start_line\":%d,\"end_line\":%d}}",
+             session_id, start_line, end_line);
+    
+    /* Send request */
+    char response[65536];  /* Larger buffer for line content */
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    
+    /* Parse response */
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    
+    const char *status_str = json_object_get_string(root, "status");
+    if (status_str && strcmp(status_str, "success") == 0) {
+        json_value_t *result = json_object_get(root, "result");
+        if (result) {
+            int total_lines = json_object_get_int(result, "total_lines", 0);
+            int ret_start = json_object_get_int(result, "start_line", 0);
+            int ret_end = json_object_get_int(result, "end_line", 0);
+            const char *content = json_object_get_string(result, "content");
+            
+            fprintf(stderr, "Total lines: %d, showing lines %d-%d:\n", total_lines, ret_start, ret_end);
+            
+            if (content) {
+                printf("%s", content);
+            }
+        }
+    } else {
+        json_value_t *error = json_object_get(root, "error");
+        if (error) {
+            const char *message = json_object_get_string(error, "message");
+            if (message) {
+                fprintf(stderr, "Error: %s\n", message);
+            }
+        }
+        json_free(root);
+        return 1;
+    }
+    
+    json_free(root);
+    return 0;
+}
+
 static int cmd_expect_incoming(socket_client_t *client, int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "Usage: pshellctl expect-incoming <session-id> <pattern> <timeout-ms>\n");
@@ -947,6 +1070,8 @@ int main(int argc, char **argv) {
         result = cmd_screen(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "scrollback") == 0) {
         result = cmd_scrollback(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "lines") == 0) {
+        result = cmd_lines(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "resize") == 0) {
         result = cmd_resize(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "expect") == 0) {

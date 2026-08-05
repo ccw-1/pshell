@@ -28,6 +28,9 @@ static void handle_get_screen(http_request_t *req, http_response_t *resp, void *
 static void handle_get_raw(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_get_scrollback(http_request_t *req, http_response_t *resp, void *user_data);
 
+static void handle_get_lines(http_request_t *req, http_response_t *resp, void *user_data);
+
+
 static void handle_status(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_health(http_request_t *req, http_response_t *resp, void *user_data);
 
@@ -135,6 +138,8 @@ bool rest_api_register_routes(rest_api_t *api) {
                                "/api/sessions/:id/raw", handle_get_raw, api);
     http_server_register_route(api->server, HTTP_METHOD_GET,
                                "/api/sessions/:id/scrollback", handle_get_scrollback, api);
+    http_server_register_route(api->server, HTTP_METHOD_GET,
+                               "/api/sessions/:id/lines", handle_get_lines, api);
 
     
     /* System */
@@ -273,12 +278,16 @@ static void handle_get_session(http_request_t *req, http_response_t *resp, void 
         return;
     }
     
+    /* Get total lines written */
+    session_line_no_t total_lines = session_get_total_lines(session);
+    
     /* Build response */
     char response[512];
     snprintf(response, sizeof(response),
-             "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
+             "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\",\"total_lines\":%llu}",
              info.id, info.command, info.rows, info.cols, info.pid,
-             info.state == SESSION_STATE_ACTIVE ? "active" : "dead");
+             info.state == SESSION_STATE_ACTIVE ? "active" : "dead",
+             (unsigned long long)total_lines);
     
     log_debug("Got session info: %s", session_id);
     free(session_id);
@@ -926,4 +935,102 @@ static void handle_get_scrollback(http_request_t *req, http_response_t *resp, vo
     
     http_response_send_json(resp, HTTP_STATUS_OK, response);
     free(session_id);
+}
+
+static void handle_get_lines(http_request_t *req, http_response_t *resp, void *user_data) {
+    rest_api_t *api = (rest_api_t*)user_data;
+    
+    if (!check_auth(api, req, resp)) return;
+    
+    /* Get session ID from URL */
+    char *session_id = extract_session_id(http_request_get_path(req));
+    if (!session_id) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid session ID");
+        return;
+    }
+    
+    /* Get query parameters */
+    const char *start_str = http_request_get_query(req, "start");
+    const char *end_str = http_request_get_query(req, "end");
+    
+    if (!start_str || !end_str) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Missing start or end parameter");
+        return;
+    }
+    
+    int start_line = atoi(start_str);
+    int end_line = atoi(end_str);
+    
+    /* Get session */
+    session_t *session = session_manager_get(api->session_mgr, session_id);
+    if (!session) {
+        http_response_send_error(resp, HTTP_STATUS_NOT_FOUND, "Session not found");
+        return;
+    }
+    
+    /* Get total lines */
+    session_line_no_t total_lines = session_get_total_lines(session);
+    
+    /* Validate parameters */
+    if (start_line < 1) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "start must be >= 1");
+        return;
+    }
+    
+    if (end_line < start_line) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "end must be >= start");
+        return;
+    }
+    
+    if (start_line > (int)total_lines) {
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "start exceeds total lines");
+        return;
+    }
+    
+    /* Read line range */
+    size_t content_len = 0;
+    char *content = session_read_line_range(session, start_line, end_line, &content_len);
+    
+    if (!content) {
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to read line range");
+        return;
+    }
+    
+    /* Build JSON response - need to escape content */
+    size_t response_capacity = content_len * 2 + 1024;
+    char *response_json = malloc(response_capacity);
+    if (!response_json) {
+        free(content);
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Out of memory");
+        return;
+    }
+    
+    int offset = snprintf(response_json, response_capacity,
+                         "{\"total_lines\":%llu,\"start_line\":%d,\"end_line\":%d,\"content\":\"",
+                         (unsigned long long)total_lines, start_line,
+                         end_line > (int)total_lines ? (int)total_lines : end_line);
+    
+    /* Escape content for JSON */
+    for (size_t i = 0; i < content_len && offset < (int)response_capacity - 10; i++) {
+        switch (content[i]) {
+            case '\n': offset += snprintf(response_json + offset, response_capacity - offset, "\\n"); break;
+            case '\r': offset += snprintf(response_json + offset, response_capacity - offset, "\\r"); break;
+            case '\t': offset += snprintf(response_json + offset, response_capacity - offset, "\\t"); break;
+            case '"': offset += snprintf(response_json + offset, response_capacity - offset, "\\\""); break;
+            case '\\': offset += snprintf(response_json + offset, response_capacity - offset, "\\\\"); break;
+            default:
+                if (content[i] >= 32 || content[i] == '\n' || content[i] == '\r' || content[i] == '\t') {
+                    response_json[offset++] = content[i];
+                }
+                break;
+        }
+    }
+    
+    snprintf(response_json + offset, response_capacity - offset, "\"}");
+    
+    http_response_set_header(resp, "Content-Type", "application/json");
+    http_response_send_json(resp, HTTP_STATUS_OK, response_json);
+    
+    free(content);
+    free(response_json);
 }

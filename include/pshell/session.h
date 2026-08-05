@@ -328,6 +328,29 @@ void session_clear_raw_buffer(session_t *session);
 int session_get_scrollback_size(const session_t *session);
 
 /**
+
+/**
+ * Read a range of lines from session output log
+ * Works across rotated files to provide seamless access to historical output
+ * @param session Session
+ * @param start_line Starting line number (1-based, inclusive)
+ * @param end_line Ending line number (1-based, inclusive)
+ * @param out_len Output: number of bytes in returned buffer
+ * @return Allocated buffer containing the lines, or NULL on error. Caller must free().
+ */
+char* session_read_line_range(session_t *session,
+                               session_line_no_t start_line,
+                               session_line_no_t end_line,
+                               size_t *out_len);
+
+/**
+ * Get total number of lines written to session output log
+ * @param session Session
+ * @return Total lines written (global counter, never resets)
+ */
+session_line_no_t session_get_total_lines(const session_t *session);
+
+/**
  * Get scrollback buffer used lines
  * @param session Session
  * @return Number of lines currently in scrollback buffer

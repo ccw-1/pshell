@@ -15,6 +15,7 @@
 
 #define MAX_SESSIONS 100
 #define RAW_BUFFER_SIZE (64 * 1024)  /* 64KB circular buffer for raw PTY output */
+#define MAX_ROTATE_FILES 32  /* Maximum number of rotation files to track */
 
 /* Forward declarations */
 static void session_pty_callback(int fd, io_event_type_t events, void *user_data);
@@ -63,6 +64,15 @@ struct session {
     int rotate_count;        /* Number of rotation files (0 = no rotation) */
     int rotate_lines;        /* Max lines per file before rotation */
     int current_line_count;  /* Current line count in active file */
+    
+    /* Line tracking for range queries */
+    session_line_no_t total_lines_written;  /* Global line counter (never resets) */
+    struct {
+        session_line_no_t start_line;  /* First line number in this file */
+        session_line_no_t end_line;    /* Last line number in this file */
+        char filename[512];             /* File path (e.g., session.log.0) */
+    } file_map[MAX_ROTATE_FILES];
+    int file_map_count;      /* Number of entries in file_map */
 };
 
 /* Session manager structure */
@@ -141,6 +151,19 @@ static void session_rotate_output_files(session_t *session) {
     char old_path[600];
     char new_path[600];
     
+    /* Update file map for current file before rotation */
+    if (session->current_line_count > 0) {
+        int idx = session->file_map_count % MAX_ROTATE_FILES;
+        session->file_map[idx].start_line = session->total_lines_written - session->current_line_count + 1;
+        session->file_map[idx].end_line = session->total_lines_written;
+        snprintf(session->file_map[idx].filename, sizeof(session->file_map[idx].filename),
+                 "%s.0", session->output_file);
+        session->file_map_count++;
+        log_debug("File map entry %d: lines %llu-%llu in %s", 
+                  idx, session->file_map[idx].start_line, 
+                  session->file_map[idx].end_line, session->file_map[idx].filename);
+    }
+    
     /* Remove oldest file (e.g., output.3 if rotate_count is 4) */
     snprintf(old_path, sizeof(old_path), "%s.%d", session->output_file, session->rotate_count - 1);
     unlink(old_path);  /* Ignore errors if file doesn't exist */
@@ -214,23 +237,27 @@ static void session_write_output_log(session_t *session, const char *data, size_
     for (size_t i = 0; i < len; i++) {
         session->output_buffer[session->output_buffer_used++] = data[i];
         
-        /* Count newlines for rotation */
-        if (session->rotate_count > 0 && data[i] == '\n') {
-            session->current_line_count++;
+        /* Count newlines for both global tracking and rotation */
+        if (data[i] == '\n') {
+            session->total_lines_written++;  /* Global counter (never resets) */
             
-            /* Check if rotation needed */
-            if (session->current_line_count >= session->rotate_lines) {
-                /* Flush current buffer first */
-                if (session->output_buffer_used > 0) {
-                    ssize_t written = write(session->output_fd, session->output_buffer, session->output_buffer_used);
-                    if (written < 0) {
-                        log_error("Failed to write to output file: %s", strerror(errno));
-                    }
-                    session->output_buffer_used = 0;
-                }
+            if (session->rotate_count > 0) {
+                session->current_line_count++;  /* Per-file counter (resets on rotation) */
                 
-                /* Rotate files */
-                session_rotate_output_files(session);
+                /* Check if rotation needed */
+                if (session->current_line_count >= session->rotate_lines) {
+                    /* Flush current buffer first */
+                    if (session->output_buffer_used > 0) {
+                        ssize_t written = write(session->output_fd, session->output_buffer, session->output_buffer_used);
+                        if (written < 0) {
+                            log_error("Failed to write to output file: %s", strerror(errno));
+                        }
+                        session->output_buffer_used = 0;
+                    }
+                    
+                    /* Rotate files */
+                    session_rotate_output_files(session);
+                }
             }
         }
         
@@ -1086,9 +1113,175 @@ int session_get_scrollback_size(const session_t *session) {
     return session->screen->scrollback_size;
 }
 
+/* Helper function to read specific line range from a file */
+static char* read_lines_from_file(const char *filepath, 
+                                   session_line_no_t start_line,
+                                   session_line_no_t end_line,
+                                   size_t *out_len) {
+    FILE *fp = fopen(filepath, "r");
+    if (!fp) {
+        log_error("Failed to open file '%s': %s", filepath, strerror(errno));
+        return NULL;
+    }
+    
+    char *result = NULL;
+    size_t result_size = 0;
+    size_t result_capacity = 4096;
+    result = malloc(result_capacity);
+    if (!result) {
+        fclose(fp);
+        return NULL;
+    }
+    
+    char line_buffer[4096];
+    session_line_no_t current_line = 1;
+    
+    while (fgets(line_buffer, sizeof(line_buffer), fp)) {
+        if (current_line >= start_line && current_line <= end_line) {
+            size_t line_len = strlen(line_buffer);
+            
+            /* Expand buffer if needed */
+            while (result_size + line_len >= result_capacity) {
+                result_capacity *= 2;
+                char *new_result = realloc(result, result_capacity);
+                if (!new_result) {
+                    free(result);
+                    fclose(fp);
+                    return NULL;
+                }
+                result = new_result;
+            }
+            
+            memcpy(result + result_size, line_buffer, line_len);
+            result_size += line_len;
+        }
+        
+        current_line++;
+        if (current_line > end_line) {
+            break;
+        }
+    }
+    
+    fclose(fp);
+    *out_len = result_size;
+    return result;
+}
+
+/* Read a range of lines from session output (across all files including rotated) */
+char* session_read_line_range(session_t *session,
+                               session_line_no_t start_line,
+                               session_line_no_t end_line,
+                               size_t *out_len) {
+    if (!session || !out_len) {
+        return NULL;
+    }
+    
+    /* Validate range */
+    if (start_line < 1 || end_line < start_line) {
+        log_error("Invalid line range: %llu-%llu", start_line, end_line);
+        return NULL;
+    }
+    
+    if (start_line > session->total_lines_written) {
+        log_error("Start line %llu exceeds total lines written %llu", 
+                  start_line, session->total_lines_written);
+        return NULL;
+    }
+    
+    /* Clamp end_line to total lines written */
+    if (end_line > session->total_lines_written) {
+        end_line = session->total_lines_written;
+    }
+    
+    char *result = NULL;
+    size_t result_size = 0;
+    
+    log_debug("Reading line range %llu-%llu from session %s (total_lines=%llu, file_map_count=%d)",
+              start_line, end_line, session->id, session->total_lines_written, session->file_map_count);
+    
+    /* Check rotated files (in file_map) */
+    for (int i = 0; i < session->file_map_count && i < MAX_ROTATE_FILES; i++) {
+        if (start_line <= session->file_map[i].end_line &&
+            end_line >= session->file_map[i].start_line) {
+            
+            /* This file contains part of the range */
+            session_line_no_t file_start = (start_line > session->file_map[i].start_line) 
+                ? start_line : session->file_map[i].start_line;
+            session_line_no_t file_end = (end_line < session->file_map[i].end_line)
+                ? end_line : session->file_map[i].end_line;
+            
+            /* Convert to 1-based line numbers within the file */
+            session_line_no_t local_start = file_start - session->file_map[i].start_line + 1;
+            session_line_no_t local_end = file_end - session->file_map[i].start_line + 1;
+            
+            log_debug("Reading lines %llu-%llu (local %llu-%llu) from rotated file %s",
+                      file_start, file_end, local_start, local_end, session->file_map[i].filename);
+            
+            size_t chunk_len = 0;
+            char *chunk = read_lines_from_file(session->file_map[i].filename, 
+                                               local_start, local_end, &chunk_len);
+            if (chunk && chunk_len > 0) {
+                /* Append to result */
+                char *new_result = realloc(result, result_size + chunk_len);
+                if (new_result) {
+                    result = new_result;
+                    memcpy(result + result_size, chunk, chunk_len);
+                    result_size += chunk_len;
+                }
+                free(chunk);
+            }
+        }
+    }
+    
+    /* Check current file */
+    if (session->output_fd >= 0 && session->current_line_count > 0) {
+        session_line_no_t current_start = session->total_lines_written - session->current_line_count + 1;
+        session_line_no_t current_end = session->total_lines_written;
+        
+        if (end_line >= current_start && start_line <= current_end) {
+            session_line_no_t file_start = (start_line > current_start) ? start_line : current_start;
+            session_line_no_t file_end = (end_line < current_end) ? end_line : current_end;
+            
+            /* Convert to 1-based line numbers within the file */
+            session_line_no_t local_start = file_start - current_start + 1;
+            session_line_no_t local_end = file_end - current_start + 1;
+            
+            log_debug("Reading lines %llu-%llu (local %llu-%llu) from current file %s",
+                      file_start, file_end, local_start, local_end, session->output_file);
+            
+            /* Flush buffer to ensure file is up to date */
+            session_flush_output_log(session);
+            
+            size_t chunk_len = 0;
+            char *chunk = read_lines_from_file(session->output_file, 
+                                               local_start, local_end, &chunk_len);
+            if (chunk && chunk_len > 0) {
+                /* Append to result */
+                char *new_result = realloc(result, result_size + chunk_len);
+                if (new_result) {
+                    result = new_result;
+                    memcpy(result + result_size, chunk, chunk_len);
+                    result_size += chunk_len;
+                }
+                free(chunk);
+            }
+        }
+    }
+    
+    *out_len = result_size;
+    return result;
+}
+
 int session_get_scrollback_used(const session_t *session) {
     if (!session || !session->screen) return 0;
     return session->screen->scrollback_used;
+}
+
+session_line_no_t session_get_total_lines(const session_t *session) {
+    if (!session) {
+        return 0;
+    }
+    return session->total_lines_written;
 }
 
 ssize_t session_get_scrollback_line(const session_t *session, int line_index, char *buffer, size_t size) {

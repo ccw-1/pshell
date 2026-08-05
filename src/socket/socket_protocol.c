@@ -32,6 +32,9 @@ static void handle_expect_pattern(socket_connection_t *conn, json_value_t *param
 static void handle_expect_pattern_incoming(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 static void handle_get_scrollback(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 
+static void handle_get_lines(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
+
+
 static void handle_daemon_status(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 
 static const char* state_to_string(session_state_t state) {
@@ -118,6 +121,8 @@ void socket_protocol_handler(socket_connection_t *conn, const char *message, voi
         handle_get_screen(conn, params, mgr);
     } else if (strcmp(method, "get_scrollback") == 0) {
         handle_get_scrollback(conn, params, mgr);
+    } else if (strcmp(method, "get_lines") == 0) {
+        handle_get_lines(conn, params, mgr);
     } else if (strcmp(method, "resize_session") == 0) {
         handle_resize_session(conn, params, mgr);
     } else if (strcmp(method, "expect_pattern") == 0) {
@@ -228,11 +233,15 @@ static void handle_get_session(socket_connection_t *conn, json_value_t *params, 
         return;
     }
     
+    /* Get total lines written */
+    session_line_no_t total_lines = session_get_total_lines(session);
+    
     /* Build response */
     char result[512];
     snprintf(result, sizeof(result),
-             "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
-             info.id, info.command, info.rows, info.cols, info.pid, state_to_string(info.state));
+             "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\",\"total_lines\":%llu}",
+             info.id, info.command, info.rows, info.cols, info.pid, state_to_string(info.state), 
+             (unsigned long long)total_lines);
     
     send_success(conn, result);
 }
@@ -663,4 +672,93 @@ static void handle_get_scrollback(socket_connection_t *conn, json_value_t *param
     snprintf(result + offset, sizeof(result) - offset, "]}");
     
     send_success(conn, result);
+}
+
+static void handle_get_lines(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
+    if (!params) {
+        send_error(conn, "Missing params");
+        return;
+    }
+    
+    const char *session_id = json_object_get_string(params, "id");
+    if (!session_id) {
+        send_error(conn, "Missing session id");
+        return;
+    }
+    
+    /* Get line range parameters */
+    int start_line = json_object_get_int(params, "start_line", 0);
+    int end_line = json_object_get_int(params, "end_line", 0);
+    
+    /* Get session */
+    session_t *session = session_manager_get(mgr, session_id);
+    if (!session) {
+        send_error(conn, "Session not found");
+        return;
+    }
+    
+    /* Get total lines */
+    session_line_no_t total_lines = session_get_total_lines(session);
+    
+    /* Validate parameters */
+    if (start_line < 1) {
+        send_error(conn, "start_line must be >= 1");
+        return;
+    }
+    
+    if (end_line < start_line) {
+        send_error(conn, "end_line must be >= start_line");
+        return;
+    }
+    
+    if (start_line > (int)total_lines) {
+        send_error(conn, "start_line exceeds total lines");
+        return;
+    }
+    
+    /* Read line range */
+    size_t content_len = 0;
+    char *content = session_read_line_range(session, start_line, end_line, &content_len);
+    
+    if (!content) {
+        send_error(conn, "Failed to read line range");
+        return;
+    }
+    
+    /* Build response - need to escape content for JSON */
+    size_t result_capacity = content_len * 2 + 1024;  /* Extra space for escaping */
+    char *result = malloc(result_capacity);
+    if (!result) {
+        free(content);
+        send_error(conn, "Out of memory");
+        return;
+    }
+    
+    int offset = snprintf(result, result_capacity,
+                         "{\"total_lines\":%llu,\"start_line\":%d,\"end_line\":%d,\"content\":\"",
+                         (unsigned long long)total_lines, start_line, 
+                         end_line > (int)total_lines ? (int)total_lines : end_line);
+    
+    /* Escape content for JSON */
+    for (size_t i = 0; i < content_len && offset < (int)result_capacity - 10; i++) {
+        switch (content[i]) {
+            case '\n': offset += snprintf(result + offset, result_capacity - offset, "\\n"); break;
+            case '\r': offset += snprintf(result + offset, result_capacity - offset, "\\r"); break;
+            case '\t': offset += snprintf(result + offset, result_capacity - offset, "\\t"); break;
+            case '"': offset += snprintf(result + offset, result_capacity - offset, "\\\""); break;
+            case '\\': offset += snprintf(result + offset, result_capacity - offset, "\\\\"); break;
+            default:
+                if (content[i] >= 32 || content[i] == '\n' || content[i] == '\r' || content[i] == '\t') {
+                    result[offset++] = content[i];
+                }
+                break;
+        }
+    }
+    
+    snprintf(result + offset, result_capacity - offset, "\"}");
+    
+    send_success(conn, result);
+    
+    free(content);
+    free(result);
 }

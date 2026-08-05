@@ -120,6 +120,16 @@ pshellctl attach <session-id>
 
 # Destroy session
 pshellctl destroy <session-id>
+
+# Get session info (includes total_lines count)
+pshellctl info <session-id>
+
+# Get line range from output log (1-based line numbers)
+pshellctl lines <session-id> --start 1 --end 100      # Lines 1-100
+pshellctl lines <session-id> --head 50                # First 50 lines
+pshellctl lines <session-id> --tail 100               # Last 100 lines
+
+
 ```
 
 #### Supported Escape Sequences
@@ -215,6 +225,24 @@ curl -X GET "http://localhost:8080/api/sessions/<session-id>/scrollback?start_li
 curl -X POST http://localhost:8080/api/sessions/<session-id>/expect \
   -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
+
+# Get session info (includes total_lines count)
+curl -X GET http://localhost:8080/api/sessions/<session-id> \
+  -H "X-API-Key: <your-generated-key>"
+
+# Get line range from output log (1-based line numbers)
+curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?start=1&end=100" \
+  -H "X-API-Key: <your-generated-key>"
+
+# Get first 50 lines
+curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?head=50" \
+  -H "X-API-Key: <your-generated-key>"
+
+# Get last 100 lines
+curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?tail=100" \
+  -H "X-API-Key: <your-generated-key>"
+
+
   -d '{"pattern":"password:","timeout":5000}'
 ```
 
@@ -440,6 +468,91 @@ test:
     - pshellctl expect $SESSION "Ready"
     - pshellctl send $SESSION "test\n"
     - pshellctl expect $SESSION "PASS"
+
+
+## Line-Range API
+
+The line-range API provides efficient access to specific ranges of output from session logs. All line numbers are **1-based** (first line = line 1).
+
+### Features
+
+- **Global Line Tracking**: Each session maintains a `total_lines` counter that never resets
+- **File Rotation Support**: Seamlessly reads across rotated log files
+- **Flexible Queries**: Support for specific ranges, head, and tail operations
+- **Three Access Methods**: CLI (`pshellctl`), REST API, and Socket protocol
+
+### CLI Usage
+
+```bash
+# Get current line count
+pshellctl info <session-id>
+# Returns: {..., "total_lines": 12345}
+
+# Get specific line range (lines 100-200)
+pshellctl lines <session-id> --start 100 --end 200
+
+# Get first 50 lines
+pshellctl lines <session-id> --head 50
+
+# Get last 100 lines
+pshellctl lines <session-id> --tail 100
+```
+
+### REST API
+
+```bash
+# Get session info (includes total_lines)
+curl -X GET http://localhost:8080/api/sessions/<session-id> \
+  -H "X-API-Key: <your-key>"
+
+# Get line range
+curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?start=100&end=200" \
+  -H "X-API-Key: <your-key>"
+
+# Get first/last N lines
+curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?head=50" \
+  -H "X-API-Key: <your-key>"
+
+curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?tail=100" \
+  -H "X-API-Key: <your-key>"
+```
+
+### Use Cases
+
+**Monitor New Output:**
+```bash
+# Save current position
+LAST_LINE=$(pshellctl info <session-id> | jq .total_lines)
+
+# Later, get only new lines
+CURRENT=$(pshellctl info <session-id> | jq .total_lines)
+pshellctl lines <session-id> --start $((LAST_LINE + 1)) --end $CURRENT
+```
+
+**Pagination:**
+```bash
+# Get total lines
+TOTAL=$(pshellctl info <session-id> | jq .total_lines)
+
+# Page through output (100 lines per page)
+PAGE_SIZE=100
+for ((page=0; page<(TOTAL/PAGE_SIZE); page++)); do
+    START=$((page * PAGE_SIZE + 1))
+    END=$((START + PAGE_SIZE - 1))
+    pshellctl lines <session-id> --start $START --end $END
+done
+```
+
+**Log Analysis:**
+```bash
+# Get last 1000 lines for analysis
+pshellctl lines <session-id> --tail 1000 | grep ERROR
+
+# Get specific error context (lines 5000-5100)
+pshellctl lines <session-id> --start 5000 --end 5100
+```
+
+
 ```
 
 ### 4. Batch Operations
