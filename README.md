@@ -470,6 +470,54 @@ test:
     - pshellctl expect $SESSION "PASS"
 
 
+## Error Handling and Exit Codes
+
+### Expect Command Exit Codes
+
+The `expect` and `expect-incoming` commands return exit codes for proper error handling in shell scripts:
+
+- **Exit 0**: Pattern matched successfully
+- **Exit 1**: Pattern not found (timeout or no match)
+
+**Example with error handling:**
+```bash
+#!/bin/bash
+SESSION=$(pshellctl create bash)
+
+# Send command
+pshellctl send $SESSION "login\n"
+
+# Wait for prompt with error handling
+if pshellctl expect $SESSION "Username:" 5000; then
+    echo "Login prompt appeared"
+    pshellctl send $SESSION "admin\n"
+else
+    echo "ERROR: Login prompt timeout" >&2
+    exit 1
+fi
+
+# Check for success or error
+if pshellctl expect $SESSION "Welcome" 5000; then
+    echo "Login successful"
+elif pshellctl expect $SESSION "Invalid" 1000; then
+    echo "ERROR: Login failed" >&2
+    exit 1
+fi
+```
+
+### Client Disconnect Handling
+
+The server is resilient to client disconnections during expect operations:
+
+- **Ctrl-C on pshellctl**: Server detects disconnect and cancels the expect operation cleanly
+- **Network interruption**: Server automatically cleans up and continues normally
+- **No server restart needed**: The server will not get stuck waiting for disconnected clients
+
+This ensures the server remains responsive even when clients disconnect unexpectedly during long-running expect operations.
+
+
+
+
 ## Line-Range API
 
 The line-range API provides efficient access to specific ranges of output from session logs. All line numbers are **1-based** (first line = line 1).
