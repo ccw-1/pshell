@@ -755,9 +755,13 @@ static int cmd_expect_incoming(socket_client_t *client, int argc, char **argv) {
                 } else {
                     printf("Pattern matched at %d (incoming-only)\n", line);
                 }
+                json_free(root);
+                return 0;
             } else {
                 const char *reason = json_object_get_string(result, "reason");
                 printf("No match (%s)\n", reason ? reason : "unknown");
+                json_free(root);
+                return 1;  /* Non-zero exit for timeout/no match */
             }
         }
     } else {
@@ -767,7 +771,7 @@ static int cmd_expect_incoming(socket_client_t *client, int argc, char **argv) {
     }
     
     json_free(root);
-    return 0;
+    return 1;
 }
 
 static int cmd_expect(socket_client_t *client, int argc, char **argv) {
@@ -813,9 +817,13 @@ static int cmd_expect(socket_client_t *client, int argc, char **argv) {
                 } else {
                     printf("Pattern matched at %d\n", line);
                 }
+                json_free(root);
+                return 0;
             } else {
                 const char *reason = json_object_get_string(result, "reason");
                 printf("No match (%s)\n", reason ? reason : "unknown");
+                json_free(root);
+                return 1;  /* Non-zero exit for timeout/no match */
             }
         }
     } else {
@@ -825,7 +833,7 @@ static int cmd_expect(socket_client_t *client, int argc, char **argv) {
     }
     
     json_free(root);
-    return 0;
+    return 1;
 }
 
 static int cmd_destroy(socket_client_t *client, int argc, char **argv) {
