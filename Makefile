@@ -130,12 +130,16 @@ install: all
 
 deploy: all
 	@echo "deploying locally"
-	cp $(DAEMON) ~/local/bin
-	cp $(CLIENT) ~/local/bin
-	cp $(CTL) ~/local/bin
-	cp config/pshell.conf ~/local/etc
+	ln -sf $(DAEMON) ~/local/bin/pshell
+	ln -sf $(CLIENT) ~/local/bin/pshell-client
+	ln -sf $(CTL) ~/local/bin/pshellctl
+	ln -sf config/pshell.conf ~/local/etc
 	@echo "deploy complete."
 	$(DAEMON) -c config/pshell.conf -f
+
+DAEMON = $(BIN_DIR)/pshell
+CLIENT = $(BIN_DIR)/pshell-client
+CTL = $(BIN_DIR)/pshellctl
 
 help:
 	@echo "pshell - Portable Programmable Shell"
