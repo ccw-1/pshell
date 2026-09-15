@@ -130,10 +130,10 @@ install: all
 
 deploy: all
 	@echo "deploying locally"
-	ln -sf $(DAEMON) ~/local/bin/pshell
-	ln -sf $(CLIENT) ~/local/bin/pshell-client
-	ln -sf $(CTL) ~/local/bin/pshellctl
-	ln -sf config/pshell.conf ~/local/etc
+	ln -sf $(shell readlink -f $(DAEMON)) ~/local/bin/pshell
+	ln -sf $(shell readlink -f $(CLIENT)) ~/local/bin/pshell-client
+	ln -sf $(shell readlink -f $(CTL)) ~/local/bin/pshellctl
+	ln -sf $(shell readlink -f config/pshell.conf) ~/local/etc/pshell.conf
 	@echo "deploy complete."
 	$(DAEMON) -c config/pshell.conf -f
 
