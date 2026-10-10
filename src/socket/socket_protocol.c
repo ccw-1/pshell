@@ -15,6 +15,9 @@
 #include <stdint.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <errno.h>
+#include <pthread.h>
+#include <sys/socket.h>
 
 /* External function to get default shell */
 extern const char* get_default_shell(void);
@@ -258,6 +261,17 @@ static void handle_destroy_session(socket_connection_t *conn, json_value_t *para
         return;
     }
     
+    /* Never free a session out from under an active expect worker */
+    session_t *session = session_manager_get(mgr, session_id);
+    if (!session) {
+        send_error(conn, "Session not found");
+        return;
+    }
+    if (session_expect_active(session)) {
+        send_error(conn, "Expect in progress for this session");
+        return;
+    }
+    
     /* Destroy session */
     if (!session_manager_destroy_session(mgr, session_id)) {
         send_error(conn, "Failed to destroy session");
@@ -444,25 +458,155 @@ static void handle_resize_session(socket_connection_t *conn, json_value_t *param
     send_success(conn, result);
 }
 
-static void handle_expect_pattern(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
-    log_info("handle_expect_pattern called");
+/* ------------------------------------------------------------------ */
+/* Asynchronous expect handling                                        */
+/*                                                                    */
+/* expect_pattern() blocks until the pattern matches or the timeout    */
+/* expires. Running it directly in the event loop would stall PTY     */
+/* reads, so output produced while waiting is never observed (the     */
+/* classic expect race). Instead the wait runs on a detached worker    */
+/* thread: the event loop keeps servicing PTYs, the PTY callback      */
+/* appends new output to the expect buffer, and the worker matches    */
+/* against it. The connection fd is detached and owned by the worker,  */
+/* which writes the response and closes the fd.                       */
+/* ------------------------------------------------------------------ */
+
+/* Append a JSON-escaped copy of s to out */
+static void append_json_escaped(char *out, size_t out_size, size_t *pos, const char *s) {
+    if (!out || *pos >= out_size - 1) return;
+    if (!s) s = "";
+    for (const char *p = s; *p && *pos < out_size - 8; p++) {
+        char c = *p;
+        switch (c) {
+            case '"':  out[(*pos)++] = '\\'; out[(*pos)++] = '"';  break;
+            case '\\': out[(*pos)++] = '\\'; out[(*pos)++] = '\\'; break;
+            case '\n': out[(*pos)++] = '\\'; out[(*pos)++] = 'n';  break;
+            case '\r': out[(*pos)++] = '\\'; out[(*pos)++] = 'r';  break;
+            case '\t': out[(*pos)++] = '\\'; out[(*pos)++] = 't';  break;
+            default:
+                if ((unsigned char)c < 0x20) {
+                    *pos += (size_t)snprintf(out + *pos, out_size - *pos, "\\u%04x", (unsigned char)c);
+                } else {
+                    out[(*pos)++] = c;
+                }
+                break;
+        }
+    }
+    out[*pos] = '\0';
+}
+
+/* Write a length-prefixed response to a raw fd (worker-thread side) */
+static void send_fd_response(int fd, const char *response) {
+    size_t len = strlen(response);
+    uint32_t len_net = htonl((uint32_t)len);
     
+    ssize_t w = write(fd, &len_net, sizeof(len_net));
+    if (w != (ssize_t)sizeof(len_net)) {
+        log_error("expect worker: failed to write response length: %s", strerror(errno));
+        return;
+    }
+    
+    size_t total = 0;
+    while (total < len) {
+        ssize_t n = write(fd, response + total, len - total);
+        if (n <= 0) {
+            log_error("expect worker: failed to write response: %s", strerror(errno));
+            return;
+        }
+        total += (size_t)n;
+    }
+}
+
+/* Cancellation probe: true when the client has gone away */
+static bool expect_client_gone(void *user_data) {
+    int fd = (int)(intptr_t)user_data;
+    char c;
+    ssize_t n = recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (n == 0) return true;
+    if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return true;
+    return false;
+}
+
+typedef struct {
+    int fd;
+    session_t *session;
+    expect_context_t *ctx;
+    char pattern[512];
+    bool case_sensitive;
+} expect_job_t;
+
+static void *expect_worker_thread(void *arg) {
+    expect_job_t *job = (expect_job_t *)arg;
+    
+    match_result_t match;
+    memset(&match, 0, sizeof(match));
+    expect_result_t result = expect_pattern(job->ctx, job->pattern, job->case_sensitive, &match);
+    
+    /* Build the response while the expect is still active so the session
+     * (cursor position) can be read safely; after expect_context_destroy()
+     * the session may be freed by another thread. */
+    char response[4096];
+    if (result == EXPECT_MATCHED) {
+        const char *buffer = expect_get_buffer(job->ctx);
+        int matched_line = 0;
+        for (size_t i = 0; i < match.start && buffer && buffer[i]; i++) {
+            if (buffer[i] == '\n') matched_line++;
+        }
+        
+        int cursor_row = 0, cursor_col = 0;
+        session_get_cursor_position(job->session, &cursor_row, &cursor_col);
+        int relative_line = matched_line - cursor_row;
+        
+        size_t pos = 0;
+        int prefix_len = snprintf(response, sizeof(response),
+                                  "{\"found\":true,\"matched_text\":\"");
+        if (prefix_len > 0) pos = (size_t)prefix_len;
+        append_json_escaped(response, sizeof(response), &pos,
+                            match.matched_text ? match.matched_text : "");
+        snprintf(response + pos, sizeof(response) - pos,
+                 "\",\"start\":%zu,\"end\":%zu,\"line\":%d}",
+                 match.start, match.end, relative_line);
+        match_result_free(&match);
+    } else if (result == EXPECT_TIMEOUT) {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"timeout\"}");
+    } else if (result == EXPECT_EOF) {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"eof\"}");
+    } else {
+        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"error\"}");
+    }
+    
+    /* Deactivates the session expect buffer; the session is no longer ours */
+    expect_context_destroy(job->ctx);
+    
+    /* Same envelope the synchronous handlers use */
+    char envelope[4160];
+    snprintf(envelope, sizeof(envelope), "{\"status\":\"success\",\"result\":%s}", response);
+    
+    send_fd_response(job->fd, envelope);
+    fsync(job->fd);
+    shutdown(job->fd, SHUT_WR);
+    close(job->fd);
+    
+    free(job);
+    return NULL;
+}
+
+static void handle_expect_common(socket_connection_t *conn, json_value_t *params,
+                                 session_manager_t *mgr, bool incoming_only) {
     if (!params) {
-        log_error("handle_expect_pattern: Missing params");
         send_error(conn, "Missing params");
         return;
     }
     
-    const char *session_id = json_object_get_string(params, "id");
+    const char *session_id = json_object_get_string(params, incoming_only ? "session_id" : "id");
     const char *pattern = json_object_get_string(params, "pattern");
-    int timeout = json_object_get_int(params, "timeout", 30000);
+    int timeout = json_object_get_int(params, "timeout", incoming_only ? 5000 : 30000);
     bool case_sensitive = json_object_get_bool(params, "case_sensitive", true);
     
-    log_info("handle_expect_pattern: session_id=%s, pattern=%s, timeout=%d", 
-             session_id ? session_id : "NULL", pattern ? pattern : "NULL", timeout);
+    log_debug("handle_expect_pattern: session_id=%s, pattern=%s, timeout=%d, incoming_only=%d",
+              session_id ? session_id : "NULL", pattern ? pattern : "NULL", timeout, incoming_only);
     
     if (!session_id || !pattern) {
-        log_error("handle_expect_pattern: Missing session id or pattern");
         send_error(conn, "Missing session id or pattern");
         return;
     }
@@ -474,117 +618,65 @@ static void handle_expect_pattern(socket_connection_t *conn, json_value_t *param
         return;
     }
     
-    /* Create expect context */
-    expect_context_t *ctx = expect_context_create(session, timeout, EXPECT_FLAG_NONE);
+    /* One expect per session: the expect buffer is shared, and session
+     * destruction is refused while an expect is active. */
+    if (session_expect_active(session)) {
+        send_error(conn, "Expect already in progress for this session");
+        return;
+    }
+    
+    /* Create expect context (seeds from the screen, or clears for incoming-only).
+     * Runs on the event loop thread; activation is what guards the session. */
+    expect_context_t *ctx = expect_context_create(session, timeout,
+                                                  incoming_only ? EXPECT_FLAG_SKIP_SEEDING
+                                                                : EXPECT_FLAG_NONE);
     if (!ctx) {
         send_error(conn, "Failed to create expect context");
         return;
     }
     
-    /* Track expect context in connection for cancellation on disconnect */
-    socket_connection_set_expect_ctx(conn, ctx);
-    
-    /* Wait for pattern match */
-    match_result_t match;
-    expect_result_t result = expect_pattern(ctx, pattern, case_sensitive, &match);
-    
-    /* Clear expect context tracking */
-    socket_connection_set_expect_ctx(conn, NULL);
-    
-    /* Build response */
-    char response[4096];
-    if (result == EXPECT_MATCHED) {
-        /* Calculate line position relative to current cursor */
-        const char *buffer = expect_get_buffer(ctx);
-        int matched_line = 0;
-        for (size_t i = 0; i < match.start && buffer[i]; i++) {
-            if (buffer[i] == '\n') matched_line++;
-        }
-        
-        int cursor_row, cursor_col;
-        session_get_cursor_position(session, &cursor_row, &cursor_col);
-        int relative_line = matched_line - cursor_row;
-        
-        snprintf(response, sizeof(response),
-                "{\"found\":true,\"matched_text\":\"%s\",\"start\":%zu,\"end\":%zu,\"line\":%d}",
-                match.matched_text ? match.matched_text : "", match.start, match.end, relative_line);
-        match_result_free(&match);
-    } else if (result == EXPECT_TIMEOUT) {
-        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"timeout\"}");
-    } else if (result == EXPECT_EOF) {
-        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"eof\"}");
-    } else {
-        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"error\"}");
+    expect_job_t *job = calloc(1, sizeof(*job));
+    if (!job) {
+        expect_context_destroy(ctx);
+        send_error(conn, "Out of memory");
+        return;
     }
     
-    expect_context_destroy(ctx);
-    send_success(conn, response);
+    job->fd = socket_connection_get_fd(conn);
+    job->session = session;
+    job->ctx = ctx;
+    job->case_sensitive = case_sensitive;
+    strncpy(job->pattern, pattern, sizeof(job->pattern) - 1);
+    
+    expect_set_cancel_check(ctx, expect_client_gone, (void *)(intptr_t)job->fd);
+    
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    
+    if (pthread_create(&tid, &attr, expect_worker_thread, job) != 0) {
+        pthread_attr_destroy(&attr);
+        expect_context_destroy(ctx);
+        free(job);
+        send_error(conn, "Failed to start expect worker");
+        return;
+    }
+    pthread_attr_destroy(&attr);
+    
+    /* The worker owns the fd (response + close) from here on */
+    socket_connection_detach(conn);
+    
+    log_info("Expect started for session %s (pattern=%s, timeout=%d, incoming_only=%d)",
+             session_id, pattern, timeout, incoming_only);
+}
+
+static void handle_expect_pattern(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
+    handle_expect_common(conn, params, mgr, false);
 }
 
 static void handle_expect_pattern_incoming(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
-    /* Get parameters */
-    const char *session_id = json_object_get_string(params, "session_id");
-    const char *pattern = json_object_get_string(params, "pattern");
-    int timeout = json_object_get_int(params, "timeout", 5000);
-    bool case_sensitive = json_object_get_bool(params, "case_sensitive", true);
-    
-    if (!session_id || !pattern) {
-        send_error(conn, "Missing required parameters");
-        return;
-    }
-    
-    /* Get session */
-    session_t *session = session_manager_get(mgr, session_id);
-    if (!session) {
-        send_error(conn, "Session not found");
-        return;
-    }
-    
-    /* Create expect context with SKIP_SEEDING flag (incoming-only mode) */
-    expect_context_t *ctx = expect_context_create(session, timeout, EXPECT_FLAG_SKIP_SEEDING);
-    if (!ctx) {
-        send_error(conn, "Failed to create expect context");
-        return;
-    }
-    
-    /* Track expect context in connection for cancellation on disconnect */
-    socket_connection_set_expect_ctx(conn, ctx);
-    
-    /* Wait for pattern match */
-    match_result_t match;
-    expect_result_t result = expect_pattern(ctx, pattern, case_sensitive, &match);
-    
-    /* Clear expect context tracking */
-    socket_connection_set_expect_ctx(conn, NULL);
-    
-    /* Build response */
-    char response[4096];
-    if (result == EXPECT_MATCHED) {
-        /* Calculate line position relative to current cursor */
-        const char *buffer = expect_get_buffer(ctx);
-        int matched_line = 0;
-        for (size_t i = 0; i < match.start && buffer[i]; i++) {
-            if (buffer[i] == '\n') matched_line++;
-        }
-        
-        int cursor_row, cursor_col;
-        session_get_cursor_position(session, &cursor_row, &cursor_col);
-        int relative_line = matched_line - cursor_row;
-        
-        snprintf(response, sizeof(response),
-                "{\"found\":true,\"matched_text\":\"%s\",\"start\":%zu,\"end\":%zu,\"line\":%d}",
-                match.matched_text ? match.matched_text : "", match.start, match.end, relative_line);
-        match_result_free(&match);
-    } else if (result == EXPECT_TIMEOUT) {
-        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"timeout\"}");
-    } else if (result == EXPECT_EOF) {
-        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"eof\"}");
-    } else {
-        snprintf(response, sizeof(response), "{\"found\":false,\"reason\":\"error\"}");
-    }
-    
-    expect_context_destroy(ctx);
-    send_success(conn, response);
+    handle_expect_common(conn, params, mgr, true);
 }
 
 static void handle_daemon_status(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {

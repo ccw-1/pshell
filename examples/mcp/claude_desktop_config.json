@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pshell": {
+      "command": "/usr/local/bin/pshell-mcp",
+      "args": []
+    }
+  }
+}

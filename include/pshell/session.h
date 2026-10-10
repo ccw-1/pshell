@@ -282,6 +282,14 @@ size_t session_peek_raw_output(const session_t *session, char *buffer, size_t si
 int session_start_expect(session_t *session, bool skip_seeding);
 
 /**
+ * Check whether an expect operation is currently active on this session
+ * (thread-safe)
+ * @param session Session
+ * @return true if an expect is in progress
+ */
+bool session_expect_active(session_t *session);
+
+/**
  * Stop expect operation - deactivate expect buffer
  * @param session Session
  */

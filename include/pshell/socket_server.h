@@ -94,6 +94,14 @@ int socket_connection_get_fd(const socket_connection_t *conn);
  */
 void socket_connection_set_expect_ctx(socket_connection_t *conn, void *ctx);
 
+/**
+ * Detach a connection: the handler transfers ownership of the fd to an
+ * asynchronous worker, which writes the response and closes the fd.
+ * After this the server must not touch the fd.
+ * @param conn Connection
+ */
+void socket_connection_detach(socket_connection_t *conn);
+
 
 
 #endif /* PSHELL_SOCKET_SERVER_H */

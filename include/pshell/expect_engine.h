@@ -40,6 +40,8 @@ typedef struct {
     session_line_no_t snapshot_line; /* Session line snapshot taken when expect starts */
     size_t snapshot_offset;         /* Byte offset within snapshot_line when expect starts */
     volatile bool cancelled;        /* Cancellation flag (set when client disconnects) */
+    bool (*cancel_check)(void *user_data); /* Optional extra cancellation probe */
+    void *cancel_user_data;         /* User data for cancel_check */
 } expect_context_t;
 
 /**
@@ -146,6 +148,17 @@ const char *expect_result_name(expect_result_t result);
  * @param ctx Expect context to cancel
  */
 void expect_cancel(expect_context_t *ctx);
+
+/**
+ * Install an extra cancellation probe, polled on every loop iteration of
+ * expect_pattern(). Used to detect client disconnects while an expect runs on
+ * a worker thread.
+ * @param ctx Expect context
+ * @param check Callback returning true when the wait should be aborted
+ * @param user_data Opaque pointer passed to check
+ */
+void expect_set_cancel_check(expect_context_t *ctx, bool (*check)(void *user_data),
+                             void *user_data);
 
 
 #endif /* PSHELL_EXPECT_ENGINE_H */

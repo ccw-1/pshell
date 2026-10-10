@@ -23,6 +23,7 @@ struct socket_connection {
     char buffer[BUFFER_SIZE];
     size_t buffer_len;
     void *expect_ctx;  /* Active expect_context_t pointer (for cancellation on disconnect) */
+    bool detached;     /* Ownership of fd transferred to a worker (async response) */
 };
 
 /* Socket server structure */
@@ -272,10 +273,17 @@ bool socket_server_handle_connection(socket_server_t *server) {
     memcpy(conn.buffer, buffer, n + 1);
     conn.buffer_len = n;
     conn.expect_ctx = NULL;
+    conn.detached = false;
     
     /* Call handler */
     if (server->handler) {
         server->handler(&conn, buffer, server->user_data);
+    }
+    
+    /* A detached connection is owned by an async worker (e.g. an expect thread):
+     * it writes the response and closes the fd itself. */
+    if (conn.detached) {
+        return true;
     }
     
     /* Cancel any active expect operation before closing */
@@ -319,4 +327,9 @@ int socket_connection_get_fd(const socket_connection_t *conn) {
 void socket_connection_set_expect_ctx(socket_connection_t *conn, void *ctx) {
     if (!conn) return;
     conn->expect_ctx = ctx;
+}
+
+void socket_connection_detach(socket_connection_t *conn) {
+    if (!conn) return;
+    conn->detached = true;
 }

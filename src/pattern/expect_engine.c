@@ -47,6 +47,8 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms, expe
     ctx->buffer[0] = '\0';
     ctx->buffer_used = 0;
     ctx->cancelled = false;
+    ctx->cancel_check = NULL;
+    ctx->cancel_user_data = NULL;
     
     /* Activate expect buffer in session */
     bool skip_seeding = (flags & EXPECT_FLAG_SKIP_SEEDING) != 0;
@@ -102,6 +104,13 @@ void expect_cancel(expect_context_t *ctx) {
     log_debug("Expect context cancelled");
 }
 
+void expect_set_cancel_check(expect_context_t *ctx, bool (*check)(void *user_data),
+                             void *user_data) {
+    if (!ctx) return;
+    ctx->cancel_check = check;
+    ctx->cancel_user_data = user_data;
+}
+
 
 
 bool expect_is_timeout(const expect_context_t *ctx) {
@@ -153,8 +162,10 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
     const int max_sleep_us = 100000;  /* Cap at 100ms */
     
     while (1) {
-        /* Check cancellation */
-        if (ctx->cancelled) {
+        /* Check cancellation (flag set by any thread, or the installed probe) */
+        if (ctx->cancelled ||
+            (ctx->cancel_check && ctx->cancel_check(ctx->cancel_user_data))) {
+            ctx->cancelled = true;
             pattern_matcher_destroy(matcher);
             log_debug("Expect operation cancelled");
             return EXPECT_ERROR;

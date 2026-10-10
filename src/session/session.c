@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <stdio.h>
+#include <pthread.h>
 
 #define MAX_SESSIONS 100
 #define RAW_BUFFER_SIZE (64 * 1024)  /* 64KB circular buffer for raw PTY output */
@@ -52,6 +53,9 @@ struct session {
     bool expect_active;
     session_line_no_t current_line_no;
     size_t current_line_offset;
+    /* Serializes expect buffer/line state between the event loop (writer,
+     * via the PTY callback) and expect worker threads (readers) */
+    pthread_mutex_t expect_lock;
     
     /* Output logging */
     char output_file[512];
@@ -108,6 +112,7 @@ session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mu
     for (int i = 0; i < MAX_SESSIONS; i++) {
         mgr->sessions[i].active = false;
         mgr->sessions[i].pty = NULL;
+        pthread_mutex_init(&mgr->sessions[i].expect_lock, NULL);
     }
     
     log_info("Created session manager (max_sessions=%d)", max_sessions);
@@ -119,6 +124,7 @@ void session_manager_destroy(session_manager_t *mgr) {
     
     /* Destroy all active sessions */
     for (int i = 0; i < MAX_SESSIONS; i++) {
+        pthread_mutex_destroy(&mgr->sessions[i].expect_lock);
         if (mgr->sessions[i].active) {
             session_t *session = &mgr->sessions[i];
             
@@ -237,13 +243,12 @@ static void session_write_output_log(session_t *session, const char *data, size_
     for (size_t i = 0; i < len; i++) {
         session->output_buffer[session->output_buffer_used++] = data[i];
         
-        /* Count newlines for both global tracking and rotation */
+        /* Count newlines for both global tracking and per-file line mapping */
         if (data[i] == '\n') {
             session->total_lines_written++;  /* Global counter (never resets) */
+            session->current_line_count++;   /* Per-file counter (resets on rotation) */
             
             if (session->rotate_count > 0) {
-                session->current_line_count++;  /* Per-file counter (resets on rotation) */
-                
                 /* Check if rotation needed */
                 if (session->current_line_count >= session->rotate_lines) {
                     /* Flush current buffer first */
@@ -355,7 +360,10 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                 }
             }
             
-            /* Also write to expect buffer if expect is active */
+            /* Also write to expect buffer if expect is active.
+             * Locked: the expect worker thread reads this buffer while the
+             * event loop (this callback) appends to it. */
+            pthread_mutex_lock(&session->expect_lock);
             if (session->expect_active && session->expect_buffer) {
                 size_t before = session->expect_buffer_used;
                 for (ssize_t i = 0; i < n; i++) {
@@ -363,7 +371,7 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                         session->expect_buffer[session->expect_buffer_used++] = buffer[i];
                     }
                 }
-                log_debug("PTY callback: wrote %zu bytes to expect_buffer (was %zu, now %zu), line=%lu offset=%zu", 
+                log_debug("PTY callback: wrote %zu bytes to expect_buffer (was %zu, now %zu), line=%lu offset=%zu",
                           session->expect_buffer_used - before, before, session->expect_buffer_used,
                           (unsigned long)session->current_line_no, session->current_line_offset);
             } else {
@@ -371,6 +379,7 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                           session->expect_active, (void*)session->expect_buffer,
                           (unsigned long)session->current_line_no, session->current_line_offset);
             }
+            pthread_mutex_unlock(&session->expect_lock);
             
             /* Parse VT100 sequences and update screen buffer */
             if (session->screen) {
@@ -517,6 +526,14 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     session->rotate_count = 0;
     session->rotate_lines = 0;
     session->current_line_count = 0;
+
+    /* Line tracking for range queries (session slots are reused, so all
+     * cumulative counters must start from zero) */
+    session->total_lines_written = 0;
+    session->current_line_no = 1;
+    session->current_line_offset = 0;
+    session->file_map_count = 0;
+    session->expect_buffer_used = 0;
     
     /* Initialize session state */
     session->state = SESSION_STATE_ACTIVE;
@@ -951,7 +968,7 @@ int session_start_expect(session_t *session, bool skip_seeding) {
     }
     
     /* Already active */
-    if (session->expect_active) {
+    if (session_expect_active(session)) {
         return 0;
     }
     
@@ -992,10 +1009,29 @@ int session_start_expect(session_t *session, bool skip_seeding) {
         log_debug("Incoming-only mode: cleared expect buffer, waiting for new data only");
     }
     
+    pthread_mutex_lock(&session->expect_lock);
     session->expect_active = true;
+    pthread_mutex_unlock(&session->expect_lock);
     
     log_debug("Started expect for session %s (skip_seeding=%d)", session->id, skip_seeding);
     return 0;
+}
+
+/**
+ * Check whether an expect operation is currently active on this session
+ * (thread-safe)
+ * @param session Session
+ * @return true if an expect is in progress
+ */
+bool session_expect_active(session_t *session) {
+    if (!session) {
+        return false;
+    }
+    
+    pthread_mutex_lock(&session->expect_lock);
+    bool active = session->expect_active;
+    pthread_mutex_unlock(&session->expect_lock);
+    return active;
 }
 
 /**
@@ -1007,8 +1043,10 @@ void session_stop_expect(session_t *session) {
         return;
     }
     
+    pthread_mutex_lock(&session->expect_lock);
     session->expect_active = false;
     session->expect_buffer_used = 0;
+    pthread_mutex_unlock(&session->expect_lock);
     
     log_debug("Stopped expect for session %s", session->id);
 }
@@ -1023,8 +1061,10 @@ void session_clear_expect_buffer(session_t *session) {
         return;
     }
     
+    pthread_mutex_lock(&session->expect_lock);
     session->expect_buffer_used = 0;
     session->expect_buffer[0] = '\0';
+    pthread_mutex_unlock(&session->expect_lock);
     
     log_debug("Cleared expect buffer for session %s", session->id);
 }
@@ -1052,7 +1092,12 @@ ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size
         return -1;
     }
     
+    /* Locked: called from expect worker threads while the event loop's PTY
+     * callback appends new output to the same buffer. */
+    pthread_mutex_lock(&session->expect_lock);
+    
     if (!session->expect_active || !session->expect_buffer) {
+        pthread_mutex_unlock(&session->expect_lock);
         log_debug("session_read_expect_output: expect not active or buffer null");
         errno = EINVAL;
         return -1;
@@ -1097,6 +1142,7 @@ ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size
         memcpy(buffer, session->expect_buffer + start_index, to_copy);
     }
     
+    pthread_mutex_unlock(&session->expect_lock);
     return (ssize_t)to_copy;
 }
 

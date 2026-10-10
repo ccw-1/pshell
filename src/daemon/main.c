@@ -1,5 +1,6 @@
 #include "pshell/logger.h"
 #include "pshell/config.h"
+#include "pshell/version.h"
 #include "pshell/pty_posix.h"
 #include "pshell/process_spawn.h"
 #include "pshell/io_multiplexer.h"
@@ -187,7 +188,7 @@ static void print_usage(const char *prog) {
 
 /* Print version */
 static void print_version(void) {
-    printf("pshell version 0.1.0\n");
+    printf("pshell version %s\n", PSHELL_VERSION_STRING);
     printf("Portable Programmable Shell with REST API\n");
 }
 

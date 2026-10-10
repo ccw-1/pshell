@@ -1,6 +1,6 @@
 # Makefile - POSIX-compliant, portable
 CC = cc
-CFLAGS = -Wall -Wextra -std=c99 -D_POSIX_C_SOURCE=200809L -g -O2 -pthread
+CFLAGS = -Wall -Wextra -std=c99 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -g -O2 -pthread
 LDFLAGS = -pthread
 
 # Platform detection
@@ -42,23 +42,32 @@ CTL_SOURCES = $(shell find $(SRC_DIR)/ctl -name '*.c') \
               $(SRC_DIR)/utils/string_utils.c \
               $(SRC_DIR)/utils/logger.c
 
+MCP_SOURCES = $(SRC_DIR)/mcp/mcp_server.c \
+              $(SRC_DIR)/socket/socket_client.c \
+              $(SRC_DIR)/daemon/config.c \
+              $(SRC_DIR)/utils/json_simple.c \
+              $(SRC_DIR)/utils/string_utils.c \
+              $(SRC_DIR)/utils/logger.c
+
 DAEMON_OBJECTS = $(DAEMON_SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 CLIENT_OBJECTS = $(CLIENT_SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 CTL_OBJECTS = $(CTL_SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+MCP_OBJECTS = $(MCP_SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
 # Targets
 DAEMON = $(BIN_DIR)/pshell
 CLIENT = $(BIN_DIR)/pshell-client
 CTL = $(BIN_DIR)/pshellctl
+MCP = $(BIN_DIR)/pshell-mcp
 
 # Test sources
 TEST_SOURCES = $(shell find tests/unit -name 'test_*.c')
 TEST_OBJECTS = $(TEST_SOURCES:tests/unit/%.c=$(BUILD_DIR)/tests/%.o)
 TEST_BINS = $(TEST_SOURCES:tests/unit/%.c=$(BIN_DIR)/tests/%)
 
-.PHONY: all clean install test check help
+.PHONY: all clean install test check mcp help
 
-all: $(DAEMON) $(CLIENT) $(CTL)
+all: $(DAEMON) $(CLIENT) $(CTL) $(MCP)
 
 $(DAEMON): $(DAEMON_OBJECTS)
 	@mkdir -p $(BIN_DIR)
@@ -76,6 +85,14 @@ $(CTL): $(CTL_OBJECTS)
 	@mkdir -p $(BIN_DIR)
 	@echo "Linking $@..."
 	@$(CC) -o $@ $(CTL_OBJECTS) $(LDFLAGS)
+	@echo "Built: $@"
+
+mcp: $(MCP)
+
+$(MCP): $(MCP_OBJECTS)
+	@mkdir -p $(BIN_DIR)
+	@echo "Linking $@..."
+	@$(CC) -o $@ $(MCP_OBJECTS) $(LDFLAGS)
 	@echo "Built: $@"
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
@@ -122,6 +139,7 @@ install: all
 	install -m 755 $(DAEMON) $(DESTDIR)/usr/local/bin/
 	install -m 755 $(CLIENT) $(DESTDIR)/usr/local/bin/
 	install -m 755 $(CTL) $(DESTDIR)/usr/local/bin/
+	install -m 755 $(MCP) $(DESTDIR)/usr/local/bin/
 	install -d $(DESTDIR)/usr/local/share/pshell/web
 	cp -r web/* $(DESTDIR)/usr/local/share/pshell/web/
 	install -d $(DESTDIR)/etc/pshell
@@ -133,6 +151,7 @@ deploy: all
 	ln -sf $(shell readlink -f $(DAEMON)) ~/local/bin/pshell
 	ln -sf $(shell readlink -f $(CLIENT)) ~/local/bin/pshell-client
 	ln -sf $(shell readlink -f $(CTL)) ~/local/bin/pshellctl
+	ln -sf $(shell readlink -f $(MCP)) ~/local/bin/pshell-mcp
 	ln -sf $(shell readlink -f config/pshell.conf) ~/local/etc/pshell.conf
 	@echo "deploy complete."
 	$(DAEMON) -c config/pshell.conf -f
@@ -149,6 +168,7 @@ help:
 	@echo "  clean    - Remove build artifacts"
 	@echo "  test     - Run unit tests"
 	@echo "  check    - Run integration tests"
+	@echo "  mcp      - Build only the MCP server (pshell-mcp)"
 	@echo "  install  - Install to system"
 	@echo "  help     - Show this help"
 	@echo ""
@@ -156,3 +176,4 @@ help:
 	@echo "  $(DAEMON)  - Main daemon"
 	@echo "  $(CLIENT)  - HTTP client tool"
 	@echo "  $(CTL)     - Socket control utility"
+	@echo "  $(MCP)     - MCP server (Model Context Protocol over stdio)"

@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <stdint.h>
+#include <signal.h>
 
 #define DEFAULT_SOCKET_PATH "/tmp/pshell.sock"
 
@@ -631,7 +632,7 @@ static int cmd_lines(socket_client_t *client, int argc, char **argv) {
         /* Get total lines first to calculate range */
         char info_request[512];
         snprintf(info_request, sizeof(info_request),
-                 "{\"method\":\"get_lines\",\"params\":{\"id\":\"%s\",\"start_line\":1,\"end_line\":1}}",
+                 "{\"method\":\"get_session\",\"params\":{\"id\":\"%s\"}}",
                  session_id);
         
         char info_response[16384];
@@ -647,12 +648,24 @@ static int cmd_lines(socket_client_t *client, int argc, char **argv) {
         }
         
         json_value_t *info_result = json_object_get(info_root, "result");
-        if (info_result) {
-            int total_lines = json_object_get_int(info_result, "total_lines", 0);
-            start_line = (total_lines > tail_lines) ? (total_lines - tail_lines + 1) : 1;
-            end_line = total_lines;
-        }
+        int total_lines = info_result ? json_object_get_int(info_result, "total_lines", 0) : 0;
         json_free(info_root);
+
+        if (total_lines <= 0) {
+            fprintf(stderr, "Output log is empty.\n");
+            return 1;
+        }
+
+        start_line = (total_lines > tail_lines) ? (total_lines - tail_lines + 1) : 1;
+        end_line = total_lines;
+
+        /* The daemon handles one message per connection, so reconnect
+         * before issuing the next request on this socket. */
+        socket_client_disconnect(client);
+        if (socket_client_connect(client, client->socket_path) < 0) {
+            fprintf(stderr, "Failed to reconnect to pshell daemon\n");
+            return 1;
+        }
     } else if (head_lines > 0) {
         start_line = 1;
         end_line = head_lines;
@@ -1021,6 +1034,9 @@ static int cmd_generate_key(int argc, char **argv) {
 int main(int argc, char **argv) {
     const char *socket_path = DEFAULT_SOCKET_PATH;
     int opt;
+    
+    /* Writes to a closed daemon connection must not kill the client */
+    signal(SIGPIPE, SIG_IGN);
     
     /* Check for environment variable override */
     const char *env_socket = getenv("PSHELL_SOCKET_PATH");

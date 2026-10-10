@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "pshell": {
+      "type": "local",
+      "command": ["/usr/local/bin/pshell-mcp"],
+      "enabled": true
+    }
+  }
+}

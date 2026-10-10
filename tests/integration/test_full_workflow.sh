@@ -74,6 +74,7 @@ log_file = $TEST_LOG
 log_level = debug
 
 [http]
+enabled = true
 port = $TEST_PORT
 bind_address = 127.0.0.1
 max_connections = 10

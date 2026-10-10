@@ -5,6 +5,7 @@ A lightweight, portable C-based programmable shell daemon with virtual terminal 
 ## 📚 Key Documentation
 
 - **[Implementation Plan](IMPLEMENTATION_PLAN.md)** - Complete technical implementation plan with architecture, phases, and specifications
+- **[MCP Server](docs/MCP_SERVER.md)** - Model Context Protocol server for AI agents (auto-starts the daemon)
 - **[Wiki Home](wiki/index.md)** - Complete documentation index organized by audience
 - **[Maintenance Guide](docs/MAINTENANCE.md)** - Operations, monitoring, troubleshooting, and maintenance procedures
 
@@ -18,6 +19,7 @@ A lightweight, portable C-based programmable shell daemon with virtual terminal 
 - **Unix Socket Control**: Local control via Unix domain socket with `pshellctl` utility
 - **Pattern Matching**: POSIX regex-based expect-like automation with dual-write architecture
 - **Web Interface**: Browser-based debugging and control interface
+- **MCP Server**: Model Context Protocol (stdio) server for AI agents; starts the daemon automatically
 - **Privilege Separation**: Sessions can run as specific users when daemon runs as root
 - **Configurable Default Shell**: Optional command parameter with configurable default shell
 - **Portable**: Pure POSIX implementation - runs on Linux, macOS, BSD, Solaris, AIX, z/OS
@@ -167,7 +169,25 @@ The `send` command supports comprehensive escape sequence processing:
 - `\NNN` - Octal (e.g., `\033` = ESC)
 ```
 
-### Control via REST API
+### MCP Server (AI Agents)
+
+`bin/pshell-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server (stdio, JSON-RPC 2.0) that exposes pshell sessions as tools. It talks to the daemon over the Unix socket and **starts the daemon automatically** if it is not running.
+
+```bash
+make mcp   # builds bin/pshell-mcp
+```
+
+MCP client configuration (opencode example):
+
+```json
+{"mcp": {"pshell": {"type": "local", "command": ["/usr/local/bin/pshell-mcp"], "enabled": true}}}
+```
+
+Exposed tools: `pshell_create_session`, `pshell_list_sessions`, `pshell_send`, `pshell_read_output`, `pshell_screen`, `pshell_scrollback`, `pshell_read_lines`, `pshell_expect`, `pshell_expect_incoming`, `pshell_resize`, `pshell_destroy_session`, `pshell_status`.
+
+Full documentation: **[docs/MCP_SERVER.md](docs/MCP_SERVER.md)**. Test it with `python3 tests/integration/test_mcp_server.py`.
+
+## Control via REST API
 
 ⚠️ **Security Warning**: The REST API requires authentication for production use. Generate a secure API key:
 
@@ -278,6 +298,7 @@ External Clients (REST/Web/pshellctl)
 ### 🔧 Technical Documentation
 
 - **[EXPECT_BUFFER_IMPLEMENTATION.md](EXPECT_BUFFER_IMPLEMENTATION.md)** - Expect buffer architecture and implementation details
+- **[MCP_SERVER.md](docs/MCP_SERVER.md)** - MCP server for AI agents (tools, auto-start, client config)
 - **[MAINTENANCE.md](MAINTENANCE.md)** - Complete maintenance guide with debugging and troubleshooting
 - **[TODO.md](TODO.md)** - Known issues, future improvements, and feature roadmap
 
@@ -719,7 +740,11 @@ Inspired by:
 - ✅ Phase 10: Socket Control Utility (pshellctl)
 - ✅ **Expect Buffer Feature**: Dedicated buffer with dual-write architecture and line position tracking
 
-**Recent Updates (2026-08-02)**:
+**Recent Updates**:
+- ✅ Expect now runs asynchronously on a worker thread, so output produced while waiting is matched (previously the daemon's event loop stalled and the call timed out)
+- ✅ Fixed output logging / line-range API: per-file line counter is now maintained without rotation, and cumulative line counters reset per session
+- ✅ Fixed `pshellctl lines --tail` SIGPIPE (reconnects between daemon round-trips)
+- ✅ Added `pshell-mcp`, a Model Context Protocol server for AI agents that auto-starts the daemon (see [docs/MCP_SERVER.md](docs/MCP_SERVER.md))
 - ✅ Implemented dedicated expect buffer to prevent data loss
 - ✅ Added dual-write system (raw buffer + expect buffer)
 - ✅ Implemented line position tracking (relative to cursor)
@@ -735,10 +760,13 @@ Inspired by:
 - `bin/pshell` - Main daemon (fully functional with expect buffer)
 - `bin/pshell-client` - HTTP CLI client (complete)
 - `bin/pshellctl` - Socket control utility (complete with line position display)
+- `bin/pshell-mcp` - MCP server for AI agents (complete; auto-starts the daemon)
 
 See **[PROGRESS.md](PROGRESS.md)** for detailed implementation status.
 
 ---
 
-**Version**: 1.0.0 (expect buffer feature complete)  
-**Last Updated**: 2026-08-02
+**Version**: 1.1.0 (MCP server + async expect)  
+**Last Updated**: 2026-10-10
+
+See [CHANGELOG.md](CHANGELOG.md) for release history and [VERSION](VERSION) for the current version.
