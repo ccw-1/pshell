@@ -53,3 +53,14 @@ test_*.conf
 test_raw_immediate
 test_raw_immediate.c
 pshell.conf
+
+# Root-level development scratch files (binaries and throwaway scripts;
+# anchored with / so tests/unit and tests/integration are unaffected)
+/api_test*.sh
+/test_*.c
+/test_entry
+/test_logger_init
+/test_minimal
+/test_minimal_main
+/test_pthread
+/test_static_init
