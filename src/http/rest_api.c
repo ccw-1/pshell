@@ -34,27 +34,71 @@ static void handle_get_lines(http_request_t *req, http_response_t *resp, void *u
 static void handle_status(http_request_t *req, http_response_t *resp, void *user_data);
 static void handle_health(http_request_t *req, http_response_t *resp, void *user_data);
 
-/* Helper: Check API key authentication */
+/* Constant-time string comparison to avoid leaking key material via timing. */
+static bool constant_time_equals(const char *a, const char *b) {
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    size_t max = (la > lb) ? la : lb;
+    unsigned char diff = (la == lb) ? 0 : 1;
+    for (size_t i = 0; i < max; i++) {
+        unsigned char ca = (i < la) ? (unsigned char)a[i] : 0;
+        unsigned char cb = (i < lb) ? (unsigned char)b[i] : 0;
+        diff |= ca ^ cb;
+    }
+    return diff == 0;
+}
+
+/* Check a token against a comma-separated key list (whitespace tolerated).
+ * Every entry is compared even after a match so timing does not depend on
+ * which key matched. */
+static bool api_key_matches(const char *key_list, const char *token) {
+    const char *p = key_list;
+    size_t tlen = strlen(token);
+    bool matched = false;
+    
+    while (*p) {
+        const char *end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        /* Trim surrounding whitespace */
+        while (len > 0 && (*p == ' ' || *p == '\t')) { p++; len--; }
+        while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t')) { len--; }
+        if (len > 0 && len == tlen) {
+            unsigned char d = 0;
+            for (size_t i = 0; i < len; i++) {
+                d |= (unsigned char)p[i] ^ (unsigned char)token[i];
+            }
+            if (d == 0) matched = true;
+        }
+        if (!end) break;
+        p = end + 1;
+    }
+    return matched;
+}
+
+/* Helper: Check API key authentication.
+ * Accepts either header form:
+ *   X-API-Key: <key>                (documented in README/examples)
+ *   Authorization: Bearer <key>     (legacy form)
+ * A single generic error is returned regardless of the failure reason so
+ * responses do not reveal whether a key is configured. */
 static bool check_auth(rest_api_t *api, http_request_t *req, http_response_t *resp) {
     if (!api->api_key) {
-        return true;  /* No auth required */
+        return true;  /* No auth configured */
     }
     
-    const char *auth = http_request_get_header(req, "Authorization");
-    if (!auth) {
-        http_response_send_error(resp, HTTP_STATUS_UNAUTHORIZED, "Missing Authorization header");
-        return false;
+    const char *token = NULL;
+    const char *x_key = http_request_get_header(req, "X-API-Key");
+    if (x_key && *x_key) {
+        token = x_key;
+    } else {
+        const char *auth = http_request_get_header(req, "Authorization");
+        if (auth && strncmp(auth, "Bearer ", 7) == 0) {
+            token = auth + 7;
+        }
     }
     
-    /* Check for "Bearer <token>" format */
-    if (strncmp(auth, "Bearer ", 7) != 0) {
-        http_response_send_error(resp, HTTP_STATUS_UNAUTHORIZED, "Invalid Authorization format");
-        return false;
-    }
-    
-    const char *token = auth + 7;
-    if (strcmp(token, api->api_key) != 0) {
-        http_response_send_error(resp, HTTP_STATUS_UNAUTHORIZED, "Invalid API key");
+    if (!token || !api_key_matches(api->api_key, token)) {
+        http_response_send_error(resp, HTTP_STATUS_UNAUTHORIZED, "Invalid or missing API key");
         return false;
     }
     

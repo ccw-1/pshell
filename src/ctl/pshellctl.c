@@ -335,11 +335,11 @@ static int cmd_send(socket_client_t *client, int argc, char **argv) {
     
     const char *session_id = argv[0];
     
-    /* Process escape sequences in text */
+    /* Process escape sequences in text: bounded, src kept separate from
+     * dst because some escapes (\F5 etc.) expand and would otherwise
+     * overwrite unread source bytes. */
     char text_buf[4096];
-    strncpy(text_buf, argv[1], sizeof(text_buf) - 1);
-    text_buf[sizeof(text_buf) - 1] = '\0';
-    str_unescape(text_buf);
+    str_unescape(text_buf, sizeof(text_buf), argv[1]);
     
     /* Build request */
     char request[4096];

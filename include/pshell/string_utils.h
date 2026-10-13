@@ -158,9 +158,13 @@ int str_format(char *buf, size_t size, const char *fmt, ...);
  *   Function keys: \F1 through \F12
  *   Special keys: \UP \DOWN \LEFT \RIGHT \HOME \END \INS \DEL \PGUP \PGDN
  *   Shift+keys: \SHIFT_UP \SHIFT_DOWN \SHIFT_LEFT \SHIFT_RIGHT \SHIFT_TAB \SHIFT_F1 through \SHIFT_F12
- * @param str String to process (will be modified)
- * @return Length of processed string
+ * @param dst Destination buffer (output, NUL-terminated)
+ * @param dst_cap Size of dst in bytes; output is truncated safely to fit,
+ *                always leaving room for the terminating NUL
+ * @param src String to process (read-only, may be the same buffer as dst
+ *            only if it is large enough for the expanded output)
+ * @return Length of processed string (excluding the terminating NUL)
  */
-size_t str_unescape(char *str);
+size_t str_unescape(char *dst, size_t dst_cap, const char *src);
 
 #endif /* PSHELL_STRING_UTILS_H */

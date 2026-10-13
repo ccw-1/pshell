@@ -46,8 +46,33 @@ HTTP REST API should **only** be enabled when:
 
 1. **Single-User Development**: Developer's local machine, no other users
 2. **Containerized**: Running in isolated container with single user
-3. **Proper Auth**: When implementing proper authentication/authorization (future feature)
+3. **API Key Auth**: `[auth] enabled = true` with strong keys (see below)
 4. **Network Isolated**: Behind firewall with strict access controls
+
+### API Key Authentication
+
+Enable auth on the REST API with the `[auth]` section:
+
+```ini
+[auth]
+enabled = true
+api_keys = my-secret-key-1, my-secret-key-2   # comma-separated, rotation supported
+```
+
+- With `enabled = true` and no keys configured, the daemon **refuses to start**
+  (fail closed).
+- Clients authenticate with either header:
+  `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+- The legacy `[http] api_key = <key>` single-key form is still honored.
+- With no auth configured, log a warning that all REST endpoints are open —
+  keep `bind_address = 127.0.0.1` in that case.
+- Key comparison is constant-time; responses use a generic 401 message.
+- Static files and `/api/health` are served **without** authentication (the
+  web UI needs them). Do not place sensitive files under `static_dir`.
+
+Even with auth enabled, the HTTP API has no per-user authorization: any client
+holding a key can access every session. Use the Unix socket with file
+permissions for stronger access control.
 
 ### Configuration Examples
 

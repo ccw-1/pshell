@@ -419,19 +419,43 @@ int main(int argc, char **argv) {
             return 1;
         }
         
-        // Set API key if configured
-        fprintf(stderr, "DEBUG: About to get API key config\n");
-        fflush(stderr);
-        const char *api_key = config_get_string(g_config, "http", "api_key", NULL);
-        fprintf(stderr, "DEBUG: api_key=%s\n", api_key ? "SET" : "NULL");
-        fflush(stderr);
+        // Configure API key authentication. Documented form:
+        //   [auth] enabled = true / api_keys = key1,key2
+        // Legacy form still honored:
+        //   [http] api_key = key
+        bool auth_enabled = config_get_bool(g_config, "auth", "enabled", false);
+        const char *auth_keys = config_get_string(g_config, "auth", "api_keys", NULL);
+        const char *http_api_key = config_get_string(g_config, "http", "api_key", NULL);
+        
+        const char *api_key = NULL;
+        if (auth_enabled) {
+            api_key = auth_keys;
+            if (!api_key || !*api_key) {
+                // Fail closed: the operator asked for auth but no key exists
+                log_error("[auth] enabled = true but no [auth] api_keys configured; "
+                          "refusing to start HTTP server");
+                rest_api_destroy(g_rest_api);
+                http_server_destroy(g_http_server);
+                session_manager_destroy(g_session_mgr);
+                io_multiplexer_destroy(g_mux);
+                remove_pid_file(pid_file);
+                logger_shutdown();
+                config_free(g_config);
+                return 1;
+            }
+        } else if (auth_keys && *auth_keys) {
+            // Keys present without enabled flag: honor them (explicit config wins)
+            api_key = auth_keys;
+        } else if (http_api_key && *http_api_key) {
+            api_key = http_api_key;
+        }
+        
         if (api_key) {
-            fprintf(stderr, "DEBUG: Setting API key\n");
-            fflush(stderr);
             rest_api_set_key(g_rest_api, api_key);
             log_info("API key authentication enabled");
-            fprintf(stderr, "DEBUG: API key set\n");
-            fflush(stderr);
+        } else {
+            log_warn("HTTP API authentication DISABLED (no [auth] api_keys or "
+                        "[http] api_key configured); all REST endpoints are open");
         }
         
         // Register REST API routes

@@ -237,27 +237,33 @@ int str_format(char *buf, size_t size, const char *fmt, ...) {
 }
 
 
-size_t str_unescape(char *str) {
-    if (!str) return 0;
+/* Bounded single-byte write for str_unescape: never writes past dst_end
+ * (the byte reserved for the terminating NUL). */
+#define PUTC(c) do { if (dst < dst_end) { *dst++ = (char)(c); } } while (0)
+
+size_t str_unescape(char *dst, size_t dst_cap, const char *src) {
+    if (!dst || dst_cap == 0) return 0;
+    if (!src) { dst[0] = '\0'; return 0; }
     
-    char *src = str;
-    char *dst = str;
+    char *dst_start = dst;
+    /* Reserve one byte for the terminating NUL; PUTC never writes past it. */
+    char *dst_end = dst + dst_cap - 1;
     
     while (*src) {
         if (*src == '\\' && *(src + 1)) {
             src++;  /* Skip backslash */
             
             switch (*src) {
-                case 'n':  *dst++ = '\n'; break;
-                case 'r':  *dst++ = '\r'; break;
-                case 't':  *dst++ = '\t'; break;
-                case '\\': *dst++ = '\\'; break;
-                case '0':  *dst++ = '\0'; break;
-                case 'a':  *dst++ = '\a'; break;
-                case 'b':  *dst++ = '\b'; break;
-                case 'f':  *dst++ = '\f'; break;
-                case 'v':  *dst++ = '\v'; break;
-                case 'e':  *dst++ = '\033'; break;  /* ESC */
+                case 'n':  PUTC('\n'); break;
+                case 'r':  PUTC('\r'); break;
+                case 't':  PUTC('\t'); break;
+                case '\\': PUTC('\\'); break;
+                case '0':  PUTC('\0'); break;
+                case 'a':  PUTC('\a'); break;
+                case 'b':  PUTC('\b'); break;
+                case 'f':  PUTC('\f'); break;
+                case 'v':  PUTC('\v'); break;
+                case 'e':  PUTC('\033'); break;  /* ESC */
                 
                 /* Function keys: \F1 through \F12 */
                 case 'F':
@@ -275,27 +281,27 @@ size_t str_unescape(char *str) {
                             /* Send xterm-style function key sequences */
                             if (fkey <= 4) {
                                 /* F1-F4: ESC O P/Q/R/S */
-                                *dst++ = '\033';
-                                *dst++ = 'O';
-                                *dst++ = 'P' + (fkey - 1);
+                                PUTC('\033');
+                                PUTC('O');
+                                PUTC('P' + (fkey - 1));
                             } else {
                                 /* F5-F12: ESC [ 15~24 ~ */
                                 const char *seq[] = {
                                     "[15~", "[17~", "[18~", "[19~",  /* F5-F8 */
                                     "[20~", "[21~", "[23~", "[24~"   /* F9-F12 */
                                 };
-                                *dst++ = '\033';
+                                PUTC('\033');
                                 const char *s = seq[fkey - 5];
-                                while (*s) *dst++ = *s++;
+                                while (*s) { PUTC(*s); s++; }
                             }
                         } else {
                             /* Invalid function key number */
-                            *dst++ = 'F';
+                            PUTC('F');
                             src -= (fkey >= 10) ? 1 : 0;
                         }
                     } else {
                         /* Not a function key, copy literal */
-                        *dst++ = 'F';
+                        PUTC('F');
                         src--;
                     }
                     break;
@@ -308,21 +314,21 @@ size_t str_unescape(char *str) {
                         
                         /* Shift+Arrow keys */
                         if (src[1] == 'U' && src[2] == 'P' && (src[3] == '\0' || src[3] == '\\')) {
-                            *dst++ = '\033'; *dst++ = '['; *dst++ = '1'; *dst++ = ';'; *dst++ = '2'; *dst++ = 'A';
+                            PUTC('\033'); PUTC('['); PUTC('1'); PUTC(';'); PUTC('2'); PUTC('A');
                             src += 2;
                         } else if (src[1] == 'D' && src[2] == 'O' && src[3] == 'W' && src[4] == 'N' && (src[5] == '\0' || src[5] == '\\')) {
-                            *dst++ = '\033'; *dst++ = '['; *dst++ = '1'; *dst++ = ';'; *dst++ = '2'; *dst++ = 'B';
+                            PUTC('\033'); PUTC('['); PUTC('1'); PUTC(';'); PUTC('2'); PUTC('B');
                             src += 4;
                         } else if (src[1] == 'L' && src[2] == 'E' && src[3] == 'F' && src[4] == 'T' && (src[5] == '\0' || src[5] == '\\')) {
-                            *dst++ = '\033'; *dst++ = '['; *dst++ = '1'; *dst++ = ';'; *dst++ = '2'; *dst++ = 'D';
+                            PUTC('\033'); PUTC('['); PUTC('1'); PUTC(';'); PUTC('2'); PUTC('D');
                             src += 4;
                         } else if (src[1] == 'R' && src[2] == 'I' && src[3] == 'G' && src[4] == 'H' && src[5] == 'T' && (src[6] == '\0' || src[6] == '\\')) {
-                            *dst++ = '\033'; *dst++ = '['; *dst++ = '1'; *dst++ = ';'; *dst++ = '2'; *dst++ = 'C';
+                            PUTC('\033'); PUTC('['); PUTC('1'); PUTC(';'); PUTC('2'); PUTC('C');
                             src += 5;
                         }
                         /* Shift+Tab (backtab) */
                         else if (src[1] == 'T' && src[2] == 'A' && src[3] == 'B' && (src[4] == '\0' || src[4] == '\\')) {
-                            *dst++ = '\033'; *dst++ = '['; *dst++ = 'Z';
+                            PUTC('\033'); PUTC('['); PUTC('Z');
                             src += 3;
                         }
                         /* Shift+Function keys (F13-F24) */
@@ -343,90 +349,90 @@ size_t str_unescape(char *str) {
                                     "[31~", "[32~", "[33~", "[34~",  /* F17-F20 */
                                     "[23;2~", "[24;2~", "[25;2~", "[26;2~"  /* F21-F24 */
                                 };
-                                *dst++ = '\033';
+                                PUTC('\033');
                                 const char *s = seq[fkey - 1];
-                                while (*s) *dst++ = *s++;
+                                while (*s) { PUTC(*s); s++; }
                             } else {
                                 src -= (fkey >= 10) ? 1 : 0;
-                                *dst++ = 'S'; *dst++ = 'H'; *dst++ = 'I'; *dst++ = 'F'; *dst++ = 'T'; *dst++ = '_'; *dst++ = 'F';
+                                PUTC('S'); PUTC('H'); PUTC('I'); PUTC('F'); PUTC('T'); PUTC('_'); PUTC('F');
                             }
                         } else {
                             /* Unknown SHIFT_ combination */
-                            *dst++ = 'S'; *dst++ = 'H'; *dst++ = 'I'; *dst++ = 'F'; *dst++ = 'T'; *dst++ = '_';
+                            PUTC('S'); PUTC('H'); PUTC('I'); PUTC('F'); PUTC('T'); PUTC('_');
                             src--;
                         }
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 case 'U':  /* UP */
                     if (src[1] == 'P' && (src[2] == '\0' || src[2] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'A';
+                        PUTC('\033'); PUTC('['); PUTC('A');
                         src++;
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 case 'D':  /* DOWN or DEL */
                     if (src[1] == 'O' && src[2] == 'W' && src[3] == 'N' && (src[4] == '\0' || src[4] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'B';
+                        PUTC('\033'); PUTC('['); PUTC('B');
                         src += 3;
                     } else if (src[1] == 'E' && src[2] == 'L' && (src[3] == '\0' || src[3] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = '3'; *dst++ = '~';
+                        PUTC('\033'); PUTC('['); PUTC('3'); PUTC('~');
                         src += 2;
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 case 'L':  /* LEFT */
                     if (src[1] == 'E' && src[2] == 'F' && src[3] == 'T' && (src[4] == '\0' || src[4] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'D';
+                        PUTC('\033'); PUTC('['); PUTC('D');
                         src += 3;
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 case 'R':  /* RIGHT */
                     if (src[1] == 'I' && src[2] == 'G' && src[3] == 'H' && src[4] == 'T' && (src[5] == '\0' || src[5] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'C';
+                        PUTC('\033'); PUTC('['); PUTC('C');
                         src += 4;
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 case 'H':  /* HOME */
                     if (src[1] == 'O' && src[2] == 'M' && src[3] == 'E' && (src[4] == '\0' || src[4] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'H';
+                        PUTC('\033'); PUTC('['); PUTC('H');
                         src += 3;
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 case 'E':  /* END */
                     if (src[1] == 'N' && src[2] == 'D' && (src[3] == '\0' || src[3] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = 'F';
+                        PUTC('\033'); PUTC('['); PUTC('F');
                         src += 2;
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 case 'I':  /* INS */
                     if (src[1] == 'N' && src[2] == 'S' && (src[3] == '\0' || src[3] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = '2'; *dst++ = '~';
+                        PUTC('\033'); PUTC('['); PUTC('2'); PUTC('~');
                         src += 2;
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 case 'P':  /* PGUP or PGDN */
                     if (src[1] == 'G' && src[2] == 'U' && src[3] == 'P' && (src[4] == '\0' || src[4] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = '5'; *dst++ = '~';
+                        PUTC('\033'); PUTC('['); PUTC('5'); PUTC('~');
                         src += 3;
                     } else if (src[1] == 'G' && src[2] == 'D' && src[3] == 'N' && (src[4] == '\0' || src[4] == '\\')) {
-                        *dst++ = '\033'; *dst++ = '['; *dst++ = '6'; *dst++ = '~';
+                        PUTC('\033'); PUTC('['); PUTC('6'); PUTC('~');
                         src += 3;
                     } else {
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
                 
@@ -434,12 +440,17 @@ size_t str_unescape(char *str) {
                 case 'c':
                 case 'C':
                     src++;
-                    if (*src >= '@' && *src <= '_') {
-                        *dst++ = *src - '@';  /* Ctrl-A = 1, Ctrl-C = 3, etc. */
+                    if (*src == '\0') {
+                        /* Trailing \c with no control char: back up so the
+                         * loop's trailing src++ lands on the NUL and the
+                         * loop terminates instead of reading past it. */
+                        src--;
+                    } else if (*src >= '@' && *src <= '_') {
+                        PUTC(*src - '@');  /* Ctrl-A = 1, Ctrl-C = 3, etc. */
                     } else if (*src >= 'a' && *src <= 'z') {
-                        *dst++ = *src - 'a' + 1;  /* Ctrl-a = 1, Ctrl-c = 3, etc. */
+                        PUTC(*src - 'a' + 1);  /* Ctrl-a = 1, Ctrl-c = 3, etc. */
                     } else {
-                        *dst++ = *src;  /* Invalid, copy as-is */
+                        PUTC(*src);  /* Invalid, copy as-is */
                     }
                     break;
                 
@@ -464,10 +475,10 @@ size_t str_unescape(char *str) {
                         } else {
                             src--;  /* Only one hex digit */
                         }
-                        *dst++ = (char)val;
+                        PUTC((char)val);
                     } else {
                         src--;  /* No hex digits, treat as literal */
-                        *dst++ = 'x';
+                        PUTC('x');
                     }
                     break;
                 
@@ -487,19 +498,20 @@ size_t str_unescape(char *str) {
                         } else {
                             src--;
                         }
-                        *dst++ = (char)val;
+                        PUTC((char)val);
                     } else {
                         /* Unknown escape, copy literal */
-                        *dst++ = *src;
+                        PUTC(*src);
                     }
                     break;
             }
             src++;
         } else {
-            *dst++ = *src++;
+            PUTC(*src);
+            src++;
         }
     }
     
     *dst = '\0';
-    return dst - str;
+    return (size_t)(dst - dst_start);
 }

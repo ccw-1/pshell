@@ -577,13 +577,24 @@ static char *tool_send(const json_value_t *args, bool *is_error) {
         return err;
     }
 
-    char *payload = str_dup(text);
-    if (!payload) {
-        *is_error = true;
-        return str_dup("Out of memory");
-    }
+    /* Escapes can expand (e.g. \F5: 3 bytes -> 5), so when processing is
+     * requested, unescape into a buffer with 2x headroom instead of
+     * in place on the exact-size str_dup. */
+    char *payload;
     if (json_object_get_bool(args, "process_escapes", false)) {
-        str_unescape(payload);
+        size_t cap = strlen(text) * 2 + 16;
+        payload = malloc(cap);
+        if (!payload) {
+            *is_error = true;
+            return str_dup("Out of memory");
+        }
+        str_unescape(payload, cap, text);
+    } else {
+        payload = str_dup(text);
+        if (!payload) {
+            *is_error = true;
+            return str_dup("Out of memory");
+        }
     }
 
     strbuf_t req;
