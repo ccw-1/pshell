@@ -44,7 +44,7 @@ pshell daemon
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/pshell.git
+git clone https://github.com/ccw-1/pshell.git
 cd pshell
 
 # Build
@@ -967,7 +967,7 @@ echo "=== Check Complete ==="
 
 ### Getting Help
 
-- GitHub Issues: https://github.com/yourusername/pshell/issues
+- GitHub Issues: https://github.com/ccw-1/pshell/issues
 - Mailing List: pshell-users@example.com
 - IRC: #pshell on irc.freenode.net
 

@@ -678,7 +678,7 @@ requests.post(f'http://localhost:8080/api/sessions/{session_id}/send',
 ### Build from Source
 
 ```bash
-git clone https://github.com/yourusername/pshell.git
+git clone https://github.com/ccw-1/pshell.git
 cd pshell
 make
 ```
@@ -715,7 +715,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- **Issues**: https://github.com/yourusername/pshell/issues
+- **Issues**: https://github.com/ccw-1/pshell/issues
 - **Documentation**: [Wiki Home](wiki/index.md)
 - **Mailing List**: pshell-users@example.com
 

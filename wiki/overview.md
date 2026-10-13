@@ -404,8 +404,8 @@ See [Roadmap](roadmap.md) for detailed development plan.
 
 ## Community
 
-- **GitHub**: https://github.com/yourusername/pshell
-- **Issues**: https://github.com/yourusername/pshell/issues
+- **GitHub**: https://github.com/ccw-1/pshell
+- **Issues**: https://github.com/ccw-1/pshell/issues
 - **Mailing List**: pshell-users@example.com
 - **IRC**: #pshell on irc.freenode.net
 
