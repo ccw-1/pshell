@@ -155,6 +155,15 @@ static void handle_create_session(socket_connection_t *conn, json_value_t *param
     int rotate_count = json_object_get_int(params, "rotate_count", 0);
     int rotate_lines = json_object_get_int(params, "rotate_lines", 0);
     
+    /* Validate dimensions: unbounded values overflow the int multiplication
+     * in screen_buffer_create (rows*cols), producing a tiny allocation and
+     * heap corruption, or request gigabytes of memory. */
+    if (rows < 1 || rows > 512 || cols < 1 || cols > 1024 ||
+        scrollback_lines < 0 || scrollback_lines > 100000) {
+        send_error(conn, "Invalid rows (1-512), cols (1-1024), or scrollback_lines (0-100000)");
+        return;
+    }
+    
     /* Use default shell if command not specified */
     if (!command) {
         command = get_default_shell();
@@ -189,23 +198,52 @@ static void handle_list_sessions(socket_connection_t *conn, json_value_t *params
         return;
     }
     
-    /* Build JSON array */
-    char result[8192];
-    int offset = snprintf(result, sizeof(result), "{\"sessions\":[");
+    /* Build JSON array. Budget leaves room for send_success()'s wrapper
+     * ({"status":"success","result":...}) inside its own 8192 buffer. */
+    char result[8160];
+    size_t len = 0;
+    size_t cap = sizeof(result);
+    int n;
+    
+    n = snprintf(result, cap, "{\"sessions\":[");
+    len = (n > 0) ? (size_t)n : 0;
     
     for (int i = 0; i < count; i++) {
-        offset += snprintf(result + offset, sizeof(result) - offset,
-                          "%s{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
-                          i > 0 ? "," : "",
-                          sessions[i].id,
-                          sessions[i].command,
-                          sessions[i].rows,
-                          sessions[i].cols,
-                          sessions[i].pid,
-                          state_to_string(sessions[i].state));
+        /* snprintf returns the would-be length; once it >= remaining space
+         * the output is truncated and len must not grow further (otherwise
+         * cap - len underflows and the next write goes out of bounds). */
+        size_t rem = (len < cap) ? cap - len : 0;
+        n = snprintf(result + len, rem,
+                     "%s{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
+                     i > 0 ? "," : "",
+                     sessions[i].id,
+                     sessions[i].command,
+                     sessions[i].rows,
+                     sessions[i].cols,
+                     sessions[i].pid,
+                     state_to_string(sessions[i].state));
+        if (n < 0 || (size_t)n >= rem) {
+            log_warn("list_sessions response truncated at %d sessions", i);
+            break;
+        }
+        len += (size_t)n;
     }
     
-    snprintf(result + offset, sizeof(result) - offset, "],\"count\":%d}", count);
+    {
+        size_t rem = (len < cap) ? cap - len : 0;
+        n = snprintf(result + len, rem, "],\"count\":%d}", count);
+        if (n > 0 && (size_t)n < rem) {
+            len += (size_t)n;
+        } else {
+            /* No room for the terminator: force a valid (truncated) close.
+             * "]}" + NUL needs 3 bytes, so the tail must start at cap-3. */
+            static const char close_json[] = "]}";
+            size_t tail = (cap - 3 < len) ? cap - 3 : len;
+            memcpy(result + tail, close_json, 3);
+            len = tail + 2;
+        }
+    }
+    result[len < cap ? len : cap - 1] = '\0';
     
     send_success(conn, result);
 }
@@ -433,8 +471,8 @@ static void handle_resize_session(socket_connection_t *conn, json_value_t *param
     int rows = json_object_get_int(params, "rows", 0);
     int cols = json_object_get_int(params, "cols", 0);
     
-    if (!session_id || rows <= 0 || cols <= 0) {
-        send_error(conn, "Invalid parameters");
+    if (!session_id || rows <= 0 || rows > 512 || cols <= 0 || cols > 1024) {
+        send_error(conn, "Invalid parameters (rows 1-512, cols 1-1024)");
         return;
     }
     

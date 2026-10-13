@@ -195,6 +195,17 @@ static void handle_create_session(http_request_t *req, http_response_t *resp, vo
     int rotate_count = json_object_get_int(json, "rotate_count", 0);
     int rotate_lines = json_object_get_int(json, "rotate_lines", 0);
     
+    /* Validate dimensions: unbounded values overflow the int multiplication
+     * in screen_buffer_create (rows*cols), producing a tiny allocation and
+     * heap corruption, or request gigabytes of memory. */
+    if (rows < 1 || rows > 512 || cols < 1 || cols > 1024 ||
+        scrollback_lines < 0 || scrollback_lines > 100000) {
+        json_free(json);
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST,
+                                 "Invalid rows (1-512), cols (1-1024), or scrollback_lines (0-100000)");
+        return;
+    }
+    
     /* Use default shell if command not specified */
     if (!command) {
         command = get_default_shell();
@@ -214,11 +225,12 @@ static void handle_create_session(http_request_t *req, http_response_t *resp, vo
     snprintf(response, sizeof(response),
              "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"status\":\"active\"}",
              session_id, command, rows, cols);
+    /* Log before json_free: 'command' points into the JSON tree and would
+     * be a dangling pointer after free. */
+    log_info("Created session: id=%s, command=%s, rows=%d, cols=%d", session_id, command, rows, cols);
     
     json_free(json);
     http_response_send_json(resp, HTTP_STATUS_CREATED, response);
-    
-    log_info("Created session: id=%s, command=%s, rows=%d, cols=%d", session_id, command, rows, cols);
 }
 
 /* Handler: List sessions */
@@ -233,17 +245,45 @@ static void handle_list_sessions(http_request_t *req, http_response_t *resp, voi
     
     /* Build JSON response */
     char response[8192];
-    int len = snprintf(response, sizeof(response), "{\"sessions\":[");
+    size_t len = 0;
+    size_t cap = sizeof(response);
+    int n;
+    
+    n = snprintf(response, cap, "{\"sessions\":[");
+    len = (n > 0) ? (size_t)n : 0;
     
     for (int i = 0; i < count; i++) {
-        if (i > 0) len += snprintf(response + len, sizeof(response) - len, ",");
-        len += snprintf(response + len, sizeof(response) - len,
-                       "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
-                       infos[i].id, infos[i].command, infos[i].rows, infos[i].cols, infos[i].pid,
-                       infos[i].state == SESSION_STATE_ACTIVE ? "active" : "dead");
+        /* snprintf returns the would-be length; once it >= remaining space
+         * the output is truncated and len must not grow further (otherwise
+         * cap - len underflows and the next write goes out of bounds). */
+        size_t rem = (len < cap) ? cap - len : 0;
+        n = snprintf(response + len, rem, "%s{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
+                     i > 0 ? "," : "",
+                     infos[i].id, infos[i].command, infos[i].rows, infos[i].cols, infos[i].pid,
+                     infos[i].state == SESSION_STATE_ACTIVE ? "active" : "dead");
+        if (n < 0 || (size_t)n >= rem) {
+            /* Response full: report truncation instead of emitting invalid JSON */
+            log_warn("list_sessions response truncated at %d sessions", i);
+            break;
+        }
+        len += (size_t)n;
     }
     
-    len += snprintf(response + len, sizeof(response) - len, "],\"count\":%d}", count);
+    {
+        size_t rem = (len < cap) ? cap - len : 0;
+        n = snprintf(response + len, rem, "],\"count\":%d}", count);
+        if (n > 0 && (size_t)n < rem) {
+            len += (size_t)n;
+        } else {
+            /* No room for the terminator: force a valid (truncated) close.
+             * "]}" + NUL needs 3 bytes, so the tail must start at cap-3. */
+            static const char close_json[] = "]}";
+            size_t tail = (cap - 3 < len) ? cap - 3 : len;
+            memcpy(response + tail, close_json, 3);
+            len = tail + 2;
+        }
+    }
+    response[len < cap ? len : cap - 1] = '\0';
     
     http_response_send_json(resp, HTTP_STATUS_OK, response);
     
@@ -525,10 +565,10 @@ static void handle_resize_terminal(http_request_t *req, http_response_t *resp, v
     int rows = json_object_get_int(json, "rows", 0);
     int cols = json_object_get_int(json, "cols", 0);
     
-    if (rows <= 0 || cols <= 0) {
+    if (rows <= 0 || rows > 512 || cols <= 0 || cols > 1024) {
         json_free(json);
         free(session_id);
-        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid rows or cols");
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid rows (1-512) or cols (1-1024)");
         return;
     }
     

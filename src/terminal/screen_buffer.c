@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 
 /* Helper: Get cell pointer */
 static inline char_cell_t *get_cell(screen_buffer_t *screen, int row, int col) {
@@ -45,6 +46,20 @@ static void add_to_scrollback(screen_buffer_t *screen, const char_cell_t *line) 
 }
 
 screen_buffer_t *screen_buffer_create(int rows, int cols, int scrollback_lines) {
+    /* Defense in depth: callers validate ranges, but a wrapped int
+     * multiplication (rows*cols) would otherwise allocate a tiny buffer
+     * while the struct claims the full dimensions. */
+    if (rows <= 0 || cols <= 0 || scrollback_lines < 0) {
+        return NULL;
+    }
+    if ((size_t)rows > SIZE_MAX / (size_t)cols / sizeof(char_cell_t)) {
+        return NULL;
+    }
+    if (scrollback_lines > 0 &&
+        (size_t)scrollback_lines > SIZE_MAX / (size_t)cols / sizeof(char_cell_t)) {
+        return NULL;
+    }
+    
     screen_buffer_t *screen = calloc(1, sizeof(screen_buffer_t));
     if (!screen) return NULL;
     

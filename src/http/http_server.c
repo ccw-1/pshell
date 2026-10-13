@@ -11,11 +11,20 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <limits.h>
+#include <sys/time.h>
+#include <sys/stat.h>
 
 #define MAX_ROUTES 64
 #define MAX_HEADERS 32
 #define MAX_QUERY_PARAMS 32
 #define BUFFER_SIZE 8192
+
+/* I/O timeout for accepted client sockets. Accepted fds do NOT inherit
+ * O_NONBLOCK from the listener on Linux, and request handling runs on the
+ * single-threaded event loop: an unbounded blocking read() on a stalled
+ * client would freeze every session and the whole daemon. */
+#define HTTP_CLIENT_IO_TIMEOUT_SEC 5
 
 /* Route entry */
 typedef struct {
@@ -405,6 +414,18 @@ bool http_server_handle_connection(http_server_t *server) {
         return false;
     }
     
+    /* Bound client I/O so a stalled or idle client cannot block the event
+     * loop forever. read()/write() on this fd fail with EAGAIN/EWOULDBLOCK
+     * after HTTP_CLIENT_IO_TIMEOUT_SEC, and the n <= 0 check below closes
+     * the connection. */
+    {
+        struct timeval tv;
+        tv.tv_sec = HTTP_CLIENT_IO_TIMEOUT_SEC;
+        tv.tv_usec = 0;
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
+    
     /* Read request */
     char buffer[BUFFER_SIZE];
     ssize_t n = read(client_fd, buffer, sizeof(buffer) - 1);
@@ -478,7 +499,9 @@ bool http_server_handle_connection(http_server_t *server) {
     
     /* Try static file serving if no route matched */
     if (!handled && server->static_dir && req->method == HTTP_METHOD_GET) {
-        char file_path[512];
+        char file_path[PATH_MAX];
+        char resolved_dir[PATH_MAX];
+        char resolved_file[PATH_MAX];
         const char *path = req->path;
         
         /* Default to index.html for root */
@@ -486,34 +509,47 @@ bool http_server_handle_connection(http_server_t *server) {
             path = "/index.html";
         }
         
-        snprintf(file_path, sizeof(file_path), "%s%s", server->static_dir, path);
-        
-        /* Check if file exists and is readable */
-        if (access(file_path, R_OK) == 0) {
-            /* Determine content type from extension */
-            const char *ext = strrchr(file_path, '.');
-            const char *content_type = "application/octet-stream";
+        /* Reject path traversal attempts outright */
+        if (path[0] == '/' && !strstr(path, "..")) {
+            snprintf(file_path, sizeof(file_path), "%s%s", server->static_dir, path);
             
-            if (ext) {
-                if (strcmp(ext, ".html") == 0) content_type = "text/html";
-                else if (strcmp(ext, ".css") == 0) content_type = "text/css";
-                else if (strcmp(ext, ".js") == 0) content_type = "application/javascript";
-                else if (strcmp(ext, ".json") == 0) content_type = "application/json";
-                else if (strcmp(ext, ".png") == 0) content_type = "image/png";
-                else if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0) content_type = "image/jpeg";
-                else if (strcmp(ext, ".gif") == 0) content_type = "image/gif";
-                else if (strcmp(ext, ".svg") == 0) content_type = "image/svg+xml";
-            }
-            
-            http_response_set_header(resp, "Content-Type", content_type);
-            /* Prevent browser caching for JS/CSS files to ensure updates are loaded */
-            if (ext && (strcmp(ext, ".js") == 0 || strcmp(ext, ".css") == 0)) {
-                http_response_set_header(resp, "Cache-Control", "no-cache, no-store, must-revalidate");
-                http_response_set_header(resp, "Pragma", "no-cache");
-                http_response_set_header(resp, "Expires", "0");
-            }
-            if (http_response_send_file(resp, file_path)) {
-                handled = true;
+            /* Defense in depth: resolve all symlinks and require the result
+             * to stay inside static_dir (also rejects the directory itself
+             * and any non-regular file). */
+            if (realpath(server->static_dir, resolved_dir) &&
+                realpath(file_path, resolved_file)) {
+                size_t dir_len = strlen(resolved_dir);
+                struct stat st;
+                
+                if (strncmp(resolved_file, resolved_dir, dir_len) == 0 &&
+                    resolved_file[dir_len] == '/' &&
+                    stat(resolved_file, &st) == 0 && S_ISREG(st.st_mode)) {
+                    /* Determine content type from extension */
+                    const char *ext = strrchr(resolved_file, '.');
+                    const char *content_type = "application/octet-stream";
+                    
+                    if (ext) {
+                        if (strcmp(ext, ".html") == 0) content_type = "text/html";
+                        else if (strcmp(ext, ".css") == 0) content_type = "text/css";
+                        else if (strcmp(ext, ".js") == 0) content_type = "application/javascript";
+                        else if (strcmp(ext, ".json") == 0) content_type = "application/json";
+                        else if (strcmp(ext, ".png") == 0) content_type = "image/png";
+                        else if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0) content_type = "image/jpeg";
+                        else if (strcmp(ext, ".gif") == 0) content_type = "image/gif";
+                        else if (strcmp(ext, ".svg") == 0) content_type = "image/svg+xml";
+                    }
+                    
+                    http_response_set_header(resp, "Content-Type", content_type);
+                    /* Prevent browser caching for JS/CSS files to ensure updates are loaded */
+                    if (ext && (strcmp(ext, ".js") == 0 || strcmp(ext, ".css") == 0)) {
+                        http_response_set_header(resp, "Cache-Control", "no-cache, no-store, must-revalidate");
+                        http_response_set_header(resp, "Pragma", "no-cache");
+                        http_response_set_header(resp, "Expires", "0");
+                    }
+                    if (http_response_send_file(resp, resolved_file)) {
+                        handled = true;
+                    }
+                }
             }
         }
     }
