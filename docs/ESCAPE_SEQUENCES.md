@@ -179,24 +179,31 @@ pshellctl send $SESSION "ls -la\\n"  # Shell sees \\n, pshellctl sees \n
 
 ### REST API
 
+**Important**: Escape processing is a **client-side** feature. The REST
+`POST /api/sessions/:id/send` endpoint sends the `text` string **verbatim** —
+sequences like `\cC`, `\F1`, `\UP` are NOT interpreted by the daemon and would
+be delivered to the PTY as literal characters. Use `pshellctl send` (or the
+MCP `pshell_send` tool with `process_escapes`) when you need escape sequence
+processing.
+
+JSON string escapes (`\n`, `\r`, `\t`) still work because the JSON parser
+decodes them before the text reaches the PTY:
+
 ```bash
-# Send with escape sequences
+# Send a real newline (JSON decodes \n to LF)
 curl -X POST http://localhost:8080/api/sessions/$SESSION/send \
   -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
-  -d '{"text":"ls -la\\n"}'
+  -d '{"text":"ls -la\n"}'
 
-# Send Ctrl-C
-curl -X POST http://localhost:8080/api/sessions/$SESSION/send \
-  -H "X-API-Key: <your-generated-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"text":"\\cC"}'
-
-# Send function key
-curl -X POST http://localhost:8080/api/sessions/$SESSION/send \
-  -H "X-API-Key: <your-generated-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"text":"\\F1"}'
+# To send control characters or function keys via REST, embed the raw bytes
+# in the JSON payload yourself, e.g.:
+printf '{"text":"%s"}' "$(printf '\003')" | \
+  curl -X POST http://localhost:8080/api/sessions/$SESSION/send \
+    -H "X-API-Key: <your-generated-key>" \
+    -H "Content-Type: application/json" \
+    -d @-
+# (that payload sends a raw Ctrl-C byte 0x03)
 ```
 
 ## Common Use Cases
@@ -269,6 +276,7 @@ pshellctl send $SESSION '\cC'
 
 ### Escape Processing
 
+- Escape processing happens **client-side** (`pshellctl send`, MCP `pshell_send` with `process_escapes`) — the daemon's REST `send` endpoint transmits text verbatim
 - Escape sequences are processed **in-place** before sending to the PTY
 - Multiple escape sequences can be combined in a single send command
 - Invalid escape sequences are passed through literally

@@ -15,7 +15,7 @@
 
 **Set for current session:**
 ```bash
-export PSHELL_SOCKET_PATH=/var/run/pshell.sock
+export PSHELL_SOCKET_PATH=/tmp/pshell.sock
 pshellctl status
 pshellctl list
 ```
@@ -27,14 +27,14 @@ PSHELL_SOCKET_PATH=/custom/path.sock pshellctl status
 
 **Override environment variable with flag:**
 ```bash
-export PSHELL_SOCKET_PATH=/var/run/pshell.sock
+export PSHELL_SOCKET_PATH=/tmp/pshell.sock
 pshellctl -s /tmp/pshell.sock status  # Uses /tmp/pshell.sock
 ```
 
 **Add to shell profile:**
 ```bash
 # ~/.bashrc or ~/.zshrc
-export PSHELL_SOCKET_PATH=/var/run/pshell.sock
+export PSHELL_SOCKET_PATH=/tmp/pshell.sock
 ```
 
 ### Use Cases
@@ -56,11 +56,11 @@ export PSHELL_SOCKET_PATH=/tmp/pshell-dev.sock
 pshellctl status
 
 # Terminal 3: Production daemon
-export PSHELL_SOCKET_PATH=/var/run/pshell.sock
+export PSHELL_SOCKET_PATH=/tmp/pshell.sock
 pshell -c config/pshell-production.conf
 
 # Terminal 4: Production client
-export PSHELL_SOCKET_PATH=/var/run/pshell.sock
+export PSHELL_SOCKET_PATH=/tmp/pshell.sock
 pshellctl status
 ```
 
@@ -73,9 +73,9 @@ After=network.target
 
 [Service]
 Type=forking
-Environment="PSHELL_SOCKET_PATH=/var/run/pshell.sock"
+Environment="PSHELL_SOCKET_PATH=/tmp/pshell.sock"
 ExecStart=/usr/local/bin/pshell -c /etc/pshell/pshell.conf
-PIDFile=/var/run/pshell.pid
+PIDFile=/tmp/pshell.pid
 Restart=on-failure
 
 [Install]
@@ -90,9 +90,9 @@ services:
   pshell:
     image: pshell:latest
     environment:
-      - PSHELL_SOCKET_PATH=/var/run/pshell.sock
+      - PSHELL_SOCKET_PATH=/tmp/pshell.sock
     volumes:
-      - /var/run/pshell.sock:/var/run/pshell.sock
+      - /tmp/pshell.sock:/tmp/pshell.sock
 ```
 
 ## Future Environment Variables

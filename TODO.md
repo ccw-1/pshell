@@ -69,10 +69,10 @@
   - Solution: Add detailed error codes and messages
   - Impact: Low - debug logging usually sufficient
 
-- [ ] **Test Suite**
-  - Current: Manual testing only
-  - Issue: No automated regression tests
-  - Solution: Create comprehensive test suite
+- [ ] **Test Suite Expansion**
+  - Current: Unit tests (`tests/unit/test_pattern.c`, `tests/unit/test_terminal.c`) and integration tests (`tests/integration/test_full_workflow.sh`, `tests/integration/test_mcp_server.py`) run via `make test` / `make check`
+  - Issue: Coverage gaps (timeout behavior, buffer overflow, concurrency, memory leaks)
+  - Solution: Extend the existing test suite to cover remaining scenarios
   - Impact: Medium - important for maintenance
 
 ## Feature Requests

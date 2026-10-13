@@ -2,7 +2,7 @@
 
 ## Current Status: Phase 10 Complete ✅
 
-**Last Updated**: 2026-07-22
+**Last Updated**: 2026-10-13
 **Build Status**: ✅ All binaries compile successfully (pshell, pshell-client, pshellctl)
 **Test Status**: ✅ All unit tests pass (9/9 terminal emulation + 8/8 pattern matching tests)
 **Integration Status**: ✅ Socket control utility (pshellctl) fully functional
@@ -137,7 +137,7 @@ Failed: 0
 - [x] Read output from session (GET /api/sessions/:id/output)
 - [x] Resize terminal (POST /api/sessions/:id/resize)
 - [x] Get screen state (GET /api/sessions/:id/screen)
-- [ ] Expect pattern matching (POST /api/sessions/:id/expect) - Deferred to Phase 7
+- [x] Expect pattern matching (POST /api/sessions/:id/expect) - implemented in Phase 7
 
 **Implementation Details**:
 - **POST /api/sessions/:id/send**: Sends text input to session PTY, returns bytes written
@@ -249,7 +249,7 @@ curl -X POST http://127.0.0.1:8080/api/sessions/$ID/expect \
 - [x] HTML/CSS layout
 - [x] JavaScript API client
 - [x] Terminal renderer (custom vanilla JS)
-- [x] Long polling client
+- [x] Polling client (repeated non-blocking /output reads)
 - [x] Static file serving integration
 
 **Implementation Details**:
@@ -274,7 +274,7 @@ curl -X POST http://127.0.0.1:8080/api/sessions/$ID/expect \
   - Line-by-line rendering with styled spans
 - **Application Logic** (`web/js/app.js`):
   - Session management (create, list, select, close)
-  - Long polling for output updates (500ms interval)
+  - Polling for output updates (500ms interval, single non-blocking reads)
   - Command input with Enter key handling
   - Terminal resize support
   - Health check with status indicator
@@ -414,18 +414,18 @@ Status: healthy
 - `src/http/http_server.c` - Added Connection: close, shutdown, fsync
 - `src/http/rest_api.c` - Added JSON escaping for output endpoint
 
-### ⏳ Phase 10: Testing (Week 13) - PENDING
-- [ ] Unit tests
-- [ ] Integration tests
-- [ ] Socket control tests
-- [ ] Platform testing
+### ✅ Phase 10: Testing (Week 13) - COMPLETE
+- [x] Unit tests (`tests/unit/test_pattern.c`, `tests/unit/test_terminal.c`, via `make test`)
+- [x] Integration tests (`tests/integration/test_full_workflow.sh`, `tests/integration/test_mcp_server.py`, via `make check`)
+- [x] Socket control tests (pshellctl covered by integration tests)
+- [ ] Platform testing (Linux verified; other platforms pending)
 
-### ⏳ Phase 11: Documentation (Week 14) - PENDING
-- [ ] API documentation
-- [ ] Socket protocol documentation
+### ⏳ Phase 11: Documentation (Week 14) - IN PROGRESS
+- [x] API documentation (README, docs/API_SCROLLBACK.md, docs/ESCAPE_SEQUENCES.md)
+- [x] Socket protocol documentation
 - [ ] User guide
 - [ ] Porting guide
-- [ ] Maintenance guide
+- [x] Maintenance guide (docs/MAINTENANCE.md)
 - [ ] Examples
 
 ## Files Implemented
@@ -526,10 +526,11 @@ Status: healthy
 **Test Files**:
 - `tests/unit/test_pattern.c` - Pattern matching unit tests (8 tests)
 
-### Placeholder Files
-- `src/cli/pshell_client.c` - HTTP client (placeholder)
-- `src/ctl/pshellctl.c` - Socket control (placeholder)
-- `src/socket/socket_client.c` - Socket client (placeholder)
+### CLI Files (originally placeholders, now fully implemented in Phase 9)
+- `src/cli/pshell_client.c` - HTTP CLI client (complete)
+- `src/ctl/pshellctl.c` - Socket control utility (complete)
+- `src/socket/socket_client.c` - Socket client (complete)
+- `src/mcp/mcp_server.c` - MCP server for AI agents (complete)
 
 ### Build System
 - `Makefile` - Portable build system (auto-discovers sources)
@@ -540,10 +541,11 @@ Status: healthy
 
 ✅ **All binaries compile successfully**:
 - `bin/pshell` - Main daemon (fully functional)
-- `bin/pshell-client` - HTTP client (placeholder)
-- `bin/pshellctl` - Socket control utility (placeholder)
+- `bin/pshell-client` - HTTP CLI client (complete)
+- `bin/pshellctl` - Socket control utility (complete)
+- `bin/pshell-mcp` - MCP server (complete)
 
-**Compilation**: Clean with only minor warnings (unused parameters in placeholders)
+**Compilation**: Clean
 
 ## Testing Status
 
@@ -574,24 +576,23 @@ Status: healthy
 - Process spawning works
 
 ### Automated Testing
-⏳ Not yet implemented (Phase 10)
+✅ Unit tests (`make test`) and integration tests (`make check`) are implemented:
+- `tests/unit/test_terminal.c` - Terminal emulation tests (9 tests)
+- `tests/unit/test_pattern.c` - Pattern matching tests (8 tests)
+- `tests/integration/test_full_workflow.sh` - End-to-end socket workflow
+- `tests/integration/test_mcp_server.py` - MCP server integration test
 
 ## Next Steps
 
-1. **Implement Terminal Emulation** (Phase 5)
-   - VT100 escape sequence parser
-   - Screen buffer management
-   - Scrollback buffer
-   - Cursor tracking
-   - Integration with session I/O
+1. **Documentation & Examples** (Phase 11)
+   - Consolidate API reference material
+   - Expand usage examples and porting notes
 
-2. **Enhance REST API** (Phase 6)
-   - Implement send input endpoint
-   - Implement read output endpoint (with long polling)
-   - Implement resize endpoint
-   - Implement expect endpoint
+2. **Test Coverage Expansion** (see TODO.md)
+   - Timeout behavior, buffer overflow, concurrent operations
+   - Memory leak testing (valgrind) and performance benchmarks
 
-3. **Continue with remaining phases**
+3. **Improvement Roadmap** - See TODO.md for prioritized items
 
 ## How to Resume Development
 

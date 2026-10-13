@@ -23,7 +23,7 @@
 #define DEFAULT_PID_FILE "/var/run/pshell.pid"
 
 /* Global state */
-static volatile bool g_running = true;
+static volatile sig_atomic_t g_running = 1;
 static config_t *g_config = NULL;
 static io_multiplexer_t *g_mux = NULL;
 static http_server_t *g_http_server = NULL;
@@ -67,11 +67,14 @@ static void signal_handler(int sig) {
             /* CRITICAL: Do NOT call log_info() or any non-async-signal-safe functions here!
              * Calling log_info() from signal handler causes deadlock if signal interrupts
              * another log_info() call (logger mutex already held by interrupted thread).
-             * Only set flags and use async-signal-safe functions like write(). */
-            g_running = false;
-            if (g_mux) {
-                io_multiplexer_stop(g_mux);
-            }
+             * Only set flags and use async-signal-safe functions like write().
+             *
+             * g_running is a volatile sig_atomic_t; the main loop polls it every
+             * io_multiplexer_run() iteration (1s timeout), so setting the flag is
+             * sufficient to begin a clean shutdown. We must NOT call
+             * io_multiplexer_stop() here: it calls log_debug(), which is not
+             * async-signal-safe and can deadlock if the signal lands inside the logger. */
+            g_running = 0;
             break;
         case SIGHUP:
             /* Same rule: no log_info() in signal handlers */
@@ -634,17 +637,51 @@ int main(int argc, char **argv) {
     
     log_info("Shutting down pshell daemon...");
     
-    // Cleanup
+    /* Teardown order matters:
+     * 1. Stop the HTTP and socket servers so no new requests arrive while we
+     *    tear down sessions.
+     * 2. Destroy the session manager, which kills and reaps every session's
+     *    child process group (otherwise children survive as orphans).
+     * 3. Destroy the REST API wrapper (it references the servers/session mgr).
+     * 4. Destroy the multiplexer and remaining global state. */
+    if (g_http_server) {
+        http_server_stop(g_http_server);
+    }
+    if (g_socket_server) {
+        socket_server_stop(g_socket_server);
+    }
+    
+    if (g_session_mgr) {
+        session_manager_destroy(g_session_mgr);
+        g_session_mgr = NULL;
+    }
+    
+    if (g_rest_api) {
+        rest_api_destroy(g_rest_api);
+        g_rest_api = NULL;
+    }
+    if (g_http_server) {
+        http_server_destroy(g_http_server);
+        g_http_server = NULL;
+    }
+    if (g_socket_server) {
+        socket_server_destroy(g_socket_server);
+        g_socket_server = NULL;
+    }
+    
     if (g_mux) {
         io_multiplexer_destroy(g_mux);
         g_mux = NULL;
     }
     
     remove_pid_file(pid_file);
-    logger_shutdown();
     config_free(g_config);
+    g_config = NULL;
+    logger_shutdown();
     
-    log_info("pshell daemon stopped");
+    /* Log before logger_shutdown() would be preferable, but the logger is
+     * already shut down here; use stderr for the final line. */
+    fprintf(stderr, "pshell daemon stopped\n");
     
     return 0;
 }

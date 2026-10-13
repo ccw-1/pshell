@@ -31,9 +31,12 @@ Content-Type: application/json
 ```bash
 # Uses default 1000 lines
 pshellctl create --command bash --rows 24 --cols 80
+
+# Explicit scrollback size
+pshellctl create --command bash --scrollback 5000
 ```
 
-**Note**: The `scrollback_lines` parameter is currently only available via REST API. The pshellctl client uses the default value.
+**Note**: The buffer size is set per session at creation time — via the `scrollback_lines` JSON parameter (REST) or the `--scrollback` flag (pshellctl).
 
 ## Retrieving Scrollback
 

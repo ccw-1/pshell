@@ -11,19 +11,19 @@ Welcome to the pshell project wiki. This documentation covers the design, implem
 
 ## Project Status
 
-**Current Phase**: Phase 2 Complete ✅
+**Current Phase**: Phase 10 Complete ✅
 
 - ✅ **Phase 1**: Core Infrastructure (PTY, I/O, Config, Logging)
 - ✅ **Phase 2**: HTTP Server (Custom HTTP server, REST API)
-- 🚧 **Phase 3**: Unix Socket Server (Next)
-- ⏳ **Phase 4**: Session Management
-- ⏳ **Phase 5**: Terminal Emulation
-- ⏳ **Phase 6**: REST API Integration
-- ⏳ **Phase 7**: Pattern Matching
-- ⏳ **Phase 8**: Web Interface
-- ⏳ **Phase 9**: CLI Client
-- ⏳ **Phase 10**: Testing
-- ⏳ **Phase 11**: Documentation
+- ✅ **Phase 3**: Unix Socket Server (JSON protocol, pshellctl)
+- ✅ **Phase 4**: Session Management
+- ✅ **Phase 5**: Terminal Emulation
+- ✅ **Phase 6**: REST API Integration
+- ✅ **Phase 7**: Pattern Matching
+- ✅ **Phase 8**: Web Interface
+- ✅ **Phase 9**: CLI Clients (pshell-client + pshellctl)
+- ✅ **Phase 10**: Testing (unit + integration tests)
+- ⏳ **Phase 11**: Documentation & Examples
 
 ## What's Working
 
@@ -49,18 +49,27 @@ curl http://127.0.0.1:8080/api/sessions
 - Non-blocking I/O
 - Event loop integration
 
-**REST API Endpoints**:
-- `GET /api/health` - Health check
+**REST API Endpoints** (14 routes):
+- `GET /api/health` - Health check (unauthenticated)
 - `GET /api/status` - Server status
-- `GET /api/sessions` - List sessions
 - `POST /api/sessions` - Create session (supports `scrollback_lines` parameter)
-- `GET /api/sessions/:id` - Get session info
+- `GET /api/sessions` - List sessions
+- `GET /api/sessions/:id` - Get session info (raw JSON, includes `total_lines`)
 - `DELETE /api/sessions/:id` - Destroy session
-- `POST /api/sessions/:id/send` - Send input
-- `GET /api/sessions/:id/scrollback` - Get scrollback buffer (query params: `start_line`, `count`)
+- `POST /api/sessions/:id/send` - Send input (text sent verbatim; escape sequences are client-side only)
 - `POST /api/sessions/:id/expect` - Wait for pattern
 - `POST /api/sessions/:id/resize` - Resize terminal
-- `GET /api/sessions/:id/output` - Get output (long poll)
+- `GET /api/sessions/:id/output` - Read available output (single non-blocking read)
+- `GET /api/sessions/:id/screen` - Get current screen state
+- `GET /api/sessions/:id/raw` - Get raw output
+- `GET /api/sessions/:id/scrollback` - Get scrollback buffer (query params: `start_line`, `count`)
+- `GET /api/sessions/:id/lines` - Get line range from output log (query params: `start`, `end` - both required)
+
+### Unix Socket Control (Phase 3)
+`pshellctl` provides local control over the Unix domain socket with the same
+operations plus CLI conveniences (`lines --head/--tail`, `scrollback`,
+`screen`, `generate-key`). The socket server shares the daemon's JSON protocol
+and event loop.
 
 ### Core Infrastructure (Phase 1)
 All core components are implemented and working:
@@ -78,22 +87,28 @@ All core components are implemented and working:
 - [README](../README.md) - Getting started guide
 - [Escape Sequences](../docs/ESCAPE_SEQUENCES.md) - Complete escape sequence reference
 - [Scrollback API](../docs/API_SCROLLBACK.md) - Scrollback buffer API documentation
-- [Configuration](configuration.md) - Configuration options (TODO)
-- [API Reference](api-reference.md) - REST API documentation (TODO)
-- [Examples](examples.md) - Usage examples (TODO)
+- [Output Logging](../docs/OUTPUT_LOGGING.md) - Session output logging and rotation
+- [Default Shell](../docs/DEFAULT_SHELL.md) - Configurable default shell
+- [MCP Server](../docs/MCP_SERVER.md) - MCP server for AI agents
+
+### For Operators
+- [Maintenance Guide](../docs/MAINTENANCE.md) - Installation, configuration, operations, troubleshooting
+- [Security](../docs/SECURITY.md) - Multi-user security considerations
+- [Environment Variables](../docs/ENVIRONMENT_VARIABLES.md) - Environment variable configuration
 
 ### For Developers
 - [Architecture](architecture.md) - System design and components
+- [Project Overview](overview.md) - High-level project description
 - [Implementation Plan](../IMPLEMENTATION_PLAN.md) - Development roadmap
 - [Progress](../PROGRESS.md) - Current status and next steps
-- [Contributing](contributing.md) - How to contribute (TODO)
-- [Porting Guide](porting.md) - Platform porting guide (TODO)
+- [Expect Buffer Implementation](../EXPECT_BUFFER_IMPLEMENTATION.md) - Expect buffer internals
+- [TODO](../TODO.md) - Known issues and improvement roadmap
 
 ## Key Design Decisions
 
 1. **No External Dependencies**: Everything implemented from scratch for maximum portability
 2. **POSIX-Only APIs**: Ensures compatibility across Unix-like systems
-3. **Single-Threaded**: Event-driven architecture using select()
+3. **Event Loop + Worker Threads**: A single-threaded select() event loop handles all I/O; expect operations run on detached worker threads guarded by a per-session mutex
 4. **Custom HTTP Server**: Simple, lightweight, no library dependencies
 5. **JSON Protocol**: Both HTTP and Unix socket use JSON for consistency
 6. **Modular Design**: Clear separation between layers
@@ -123,27 +138,22 @@ curl -X POST http://127.0.0.1:8080/api/sessions \
 
 ## Next Steps
 
-1. **Unix Socket Server** (Phase 3)
-   - Implement Unix domain socket server
-   - Create socket protocol (JSON-based)
-   - Build pshellctl utility
+1. **Documentation & Examples** (Phase 11)
+   - Consolidate API reference material
+   - Expand usage examples
+   - Keep wiki pages in sync with the code
 
-2. **Session Management** (Phase 4)
-   - Implement session lifecycle
-   - Integrate with PTY layer
-   - Add resource management
-
-3. **Terminal Emulation** (Phase 5)
-   - VT100 escape sequence parser
-   - Screen buffer management
-   - Scrollback support
+2. **Improvement Roadmap** (see [TODO.md](../TODO.md))
+   - Expand test coverage
+   - Expect buffer sizing and precision improvements
+   - Config reload support (currently not implemented)
 
 See [PROGRESS.md](../PROGRESS.md) for detailed status and [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md) for complete roadmap.
 
 ## Contributing
 
-This project is under active development. Contributions are welcome once the core implementation is complete.
+This project is under active development. Contributions are welcome: open an issue or pull request at https://github.com/ccw-1/pshell.
 
 ## License
 
-See [LICENSE](../LICENSE) file for details.
+License: TBD (no license file is present yet).

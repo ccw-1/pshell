@@ -21,14 +21,14 @@ pshell is built on a modular, layered architecture designed for portability and 
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │         Simple HTTP Server (custom, no deps)           │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │ │
-│  │  │ REST API     │  │ Long Polling │  │ Static Web  │ │ │
-│  │  │ Handler      │  │ (events)     │  │ Files       │ │ │
+│  │  │ REST API     │  │ Output Read  │  │ Static Web  │ │ │
+│  │  │ Handler      │  │ (non-block.) │  │ Files       │ │ │
 │  │  └──────┬───────┘  └──────┬───────┘  └─────────────┘ │ │
 │  └─────────┼──────────────────┼────────────────────────────┘ │
 │            │                  │                              │
 │  ┌─────────▼──────────────────▼────────────────────────────┐ │
 │  │      Unix Domain Socket Server                         │ │
-│  │  - /var/run/pshell.sock                                │ │
+│  │  - /tmp/pshell.sock (default; configurable)           │ │
 │  │  - Same API as HTTP (JSON protocol)                   │ │
 │  │  - No authentication (file permissions)               │ │
 │  └─────────┬──────────────────────────────────────────────┘ │
@@ -100,14 +100,14 @@ pshell is built on a modular, layered architecture designed for portability and 
   - Request parsing
   - Response building
   - Static file serving
-  - Long polling for events
+  - Single non-blocking read for output retrieval
 - **Unix Socket Server**: Local IPC
   - JSON-based protocol
   - File permission-based security
 
 **Design Decisions**:
 - No external HTTP libraries (libmicrohttpd, etc.)
-- Simple, single-threaded design
+- Event-driven main loop; long-running expect work is offloaded to worker threads
 - Select-based I/O multiplexing
 
 ### 3. API Layer
@@ -136,8 +136,7 @@ pshell is built on a modular, layered architecture designed for portability and 
 **Features**:
 - Multiple concurrent sessions
 - Session isolation
-- Resource limits
-- Idle timeout
+- Resource limits (max sessions)
 
 ### 5. PTY Layer
 
@@ -237,7 +236,7 @@ pshell is built on a modular, layered architecture designed for portability and 
 8. Terminal Emulator → Parse escape sequences
 9. Screen Buffer → Update state
 10. Event System → Notify listeners
-11. Client ← Long poll returns output
+11. Client ← Response with available output (single non-blocking read)
 ```
 
 ### Pattern Matching Flow
@@ -256,22 +255,25 @@ pshell is built on a modular, layered architecture designed for portability and 
 
 ## Threading Model
 
-**Single-threaded design** with select-based I/O multiplexing:
+**Event loop + worker threads**:
 
-- Main thread runs event loop
-- All I/O is non-blocking
-- No thread synchronization needed
-- Simpler, more portable
+- Main thread runs a select()-based event loop for all network and PTY I/O
+- All event-loop I/O is non-blocking
+- Each expect operation runs on a **detached worker thread** so the event loop
+  keeps processing output while the client waits for a pattern
+- Per-session **pthread mutex** protects the session's expect buffer and state
+  shared between the worker thread and the event loop
 
 **Advantages**:
-- No race conditions
-- No deadlocks
-- Easier to debug
+- Output produced while an expect is waiting is matched (the event loop never stalls)
+- Main-loop latency is unaffected by long-running expect operations
+- Easier to debug than a fully multi-threaded design
 - More portable
 
 **Trade-offs**:
-- Limited to single CPU core
-- Blocking operations must be avoided
+- Expect worker threads poll the expect buffer at short intervals (~10ms)
+- Shared session state must be guarded by the per-session mutex
+- Still limited to a single event-loop CPU core for I/O handling
 - Sufficient for typical workloads (50+ sessions)
 
 ## Security Model
@@ -300,22 +302,23 @@ Configuration is loaded from INI-style file:
 
 ```ini
 [daemon]
-pid_file = /var/run/pshell.pid
-log_file = /var/log/pshell.log
+pid_file = /tmp/pshell.pid
+log_file = /tmp/pshell.log
 log_level = info
+use_syslog = false
 
 [http]
+enabled = false
 port = 8080
 bind_address = 127.0.0.1
 
 [socket]
 enabled = true
-socket_path = /var/run/pshell.sock
+socket_path = /tmp/pshell.sock
 
 [sessions]
 max_sessions = 50
-default_rows = 24
-default_cols = 80
+default_shell = /bin/bash
 ```
 
 ## Error Handling
@@ -350,30 +353,19 @@ default_cols = 80
 
 ## Implementation Status
 
-### ✅ Phase 1: Core Infrastructure (COMPLETE)
-- PTY operations
-- Process spawning
-- I/O multiplexing
-- Configuration
-- Logging
-- Utilities
+All phases through 10 are **COMPLETE**:
 
-### 🚧 Phase 2: HTTP Server (IN PROGRESS)
-- HTTP server
-- Request parsing
-- Response building
-- Static files
-- Authentication
+- ✅ **Phase 1**: Core Infrastructure (PTY, process spawning, I/O multiplexing, configuration, logging, utilities)
+- ✅ **Phase 2**: HTTP Server (request parsing, response building, static files, authentication)
+- ✅ **Phase 3**: Unix Socket Server (JSON protocol, pshellctl)
+- ✅ **Phase 4**: Session Management
+- ✅ **Phase 5**: Terminal Emulation (VT100 parser, screen buffer, scrollback)
+- ✅ **Phase 6**: REST API (send, output, screen, resize, expect)
+- ✅ **Phase 7**: Pattern Matching (regex matcher, expect engine)
+- ✅ **Phase 8**: Web Interface
+- ✅ **Phase 9**: CLI Clients (pshell-client + pshellctl, pshell-mcp)
+- ✅ **Phase 10**: Testing (unit + integration tests via `make test` / `make check`)
 
-### ⏳ Remaining Phases
-- Phase 3: Unix Socket Server
-- Phase 4: Session Management
-- Phase 5: Terminal Emulation
-- Phase 6: REST API
-- Phase 7: Pattern Matching
-- Phase 8: Web Interface
-- Phase 9: CLI Client
-- Phase 10: Testing
-- Phase 11: Documentation
+⏳ Remaining: **Phase 11** (Documentation & Examples) and the improvement roadmap in [TODO.md](../TODO.md).
 
 See [PROGRESS.md](../PROGRESS.md) for detailed status.

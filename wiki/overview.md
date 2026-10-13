@@ -59,7 +59,6 @@ Each session:
 When the pattern matches, you get:
 - The matched text
 - Position in buffer
-- Surrounding context
 
 This enables expect-like automation:
 
@@ -147,7 +146,7 @@ All operations return JSON responses.
 - **Pure POSIX**: No platform-specific code
 - **Standard APIs**: posix_openpt, regex.h, sockets
 - **Minimal Dependencies**: No external libraries
-- **Tested Platforms**: Linux, macOS, BSD, Solaris, AIX, z/OS
+- **Tested Platforms**: Linux (verified); macOS, BSD, Solaris, AIX, z/OS (planned)
 
 ### 2. Simplicity
 
@@ -335,85 +334,67 @@ Use **tmux/screen** when:
 
 ## Project Status
 
-**Current Phase**: Planning
+**Current Phase**: Phase 10 Complete (v1.1.0)
 
-See [Roadmap](roadmap.md) for detailed development plan.
+All phases through 10 are implemented: core infrastructure, HTTP server, Unix
+socket server, session management, terminal emulation, REST API, pattern
+matching, web interface, CLI clients (pshell-client + pshellctl), and testing
+(unit + integration tests via `make test` / `make check`).
 
-### Planned Features
+See [Progress](../PROGRESS.md) for detailed implementation status and
+[Implementation Plan](../IMPLEMENTATION_PLAN.md) for the original roadmap.
 
-**Phase 1** (Weeks 1-2):
-- Core infrastructure
-- PTY management
-- Process spawning
+### Completed Features (summary)
 
-**Phase 2** (Weeks 3-4):
-- HTTP server
-- Request/response handling
-
-**Phase 3** (Week 5):
+**Phase 1-4**:
+- Core infrastructure (PTY, process spawning, event loop, config, logging)
+- HTTP server and REST API foundation
+- Unix socket server and JSON protocol
 - Session management
-- Resource cleanup
 
-**Phase 4** (Weeks 6-7):
-- Terminal emulation
-- VT100 support
+**Phase 5-7**:
+- Terminal emulation (VT100/xterm, screen buffer, scrollback)
+- REST API integration (send, output, screen, resize, expect)
+- Pattern matching (POSIX regex, expect engine)
 
-**Phase 5** (Week 8):
-- REST API
-- JSON handling
+**Phase 8-10**:
+- Web interface (browser-based debugging)
+- CLI clients (pshell-client, pshellctl, pshell-mcp)
+- Testing (unit + integration tests)
 
-**Phase 6** (Week 9):
-- Pattern matching
-- Expect engine
-
-**Phase 7** (Week 10):
-- Web interface
-- Terminal renderer
-
-**Phase 8** (Week 11):
-- CLI client
-- Interactive mode
-
-**Phase 9** (Week 12):
-- Testing
-- Platform validation
-
-**Phase 10** (Week 13):
-- Documentation
-- Examples
+Remaining: Phase 11 (Documentation & Examples) and the improvement roadmap in
+[TODO](../TODO.md).
 
 ## Getting Involved
 
 ### For Users
 
-- Try the [Getting Started](getting-started.md) guide
-- Read the [User Guide](user-guide.md)
-- Explore [Examples](examples.md)
+- Try the [README](../README.md) quick start
+- Read the [Escape Sequences](../docs/ESCAPE_SEQUENCES.md) reference
+- Explore the [Scrollback API](../docs/API_SCROLLBACK.md)
 
 ### For Developers
 
 - Review [Architecture](architecture.md)
-- Set up [Development Environment](development-setup.md)
-- Read [Contributing Guidelines](contributing.md)
+- Read [Progress](../PROGRESS.md) and [TODO](../TODO.md)
+- Open an issue or pull request on GitHub
 
 ### For Operators
 
-- Read [Installation Guide](installation.md)
-- Configure using [Configuration Reference](configuration.md)
-- Learn [Operations](operations.md)
+- Read the [Maintenance Guide](../docs/MAINTENANCE.md)
+- Configure using the configuration reference in the Maintenance Guide
+- Review [Security](../docs/SECURITY.md) notes
 
 ## Community
 
 - **GitHub**: https://github.com/ccw-1/pshell
 - **Issues**: https://github.com/ccw-1/pshell/issues
-- **Mailing List**: pshell-users@example.com
-- **IRC**: #pshell on irc.freenode.net
 
 ## License
 
-MIT License - see LICENSE file for details.
+License: TBD (no license file is present yet).
 
 ---
 
-**Last Updated**: 2026-07-17  
-**Version**: 1.0.0
+**Last Updated**: 2026-10-13  
+**Version**: 1.1.0

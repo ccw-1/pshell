@@ -45,7 +45,7 @@ sudo make install
 # Start daemon
 sudo pshell -c /etc/pshell/pshell.conf
 
-# Or use systemd (Linux)
+# Or use systemd (Linux; requires a systemd unit — see docs/MAINTENANCE.md)
 sudo systemctl start pshell
 
 # Start in foreground (for debugging)
@@ -61,7 +61,7 @@ kill $(cat /tmp/pshell.pid)
 # Or find and stop by name
 pkill pshell
 
-# Or use systemd (Linux)
+# Or use systemd (Linux; requires a systemd unit — see docs/MAINTENANCE.md)
 sudo systemctl stop pshell
 
 # If running in foreground mode (-f)
@@ -114,17 +114,20 @@ pshellctl send <session-id> '\SHIFT_F1'     # Shift+F1 (F13)
 # Get scrollback buffer (retrieve terminal history)
 pshellctl scrollback <session-id> --start 0 --count 50
 
-# Expect pattern
-pshellctl expect <session-id> "password:" --timeout 5000
+# Expect pattern (timeout in ms is a positional arg, default 5000)
+pshellctl expect <session-id> "password:" 5000
 
-# Attach interactively
-pshellctl attach <session-id>
+# View the current screen (there is no interactive attach)
+pshellctl screen <session-id>
 
 # Destroy session
 pshellctl destroy <session-id>
 
-# Get session info (includes total_lines count)
+# Get session info (text: ID, Command, Size, PID, State)
 pshellctl info <session-id>
+# For raw JSON including total_lines, use:
+#   pshell-client info <session-id>
+#   curl -H "X-API-Key: <key>" http://localhost:8080/api/sessions/<session-id>
 
 # Get line range from output log (1-based line numbers)
 pshellctl lines <session-id> --start 1 --end 100      # Lines 1-100
@@ -167,7 +170,6 @@ The `send` command supports comprehensive escape sequence processing:
 **Numeric:**
 - `\xHH` - Hexadecimal (e.g., `\x03` = Ctrl-C)
 - `\NNN` - Octal (e.g., `\033` = ESC)
-```
 
 ### MCP Server (AI Agents)
 
@@ -201,6 +203,7 @@ enabled = true
 api_keys = <generated-key>
 
 # Restart daemon to apply
+# (requires a systemd unit — see docs/MAINTENANCE.md; otherwise kill and re-run pshell)
 sudo systemctl restart pshell
 ```
 
@@ -245,25 +248,19 @@ curl -X GET "http://localhost:8080/api/sessions/<session-id>/scrollback?start_li
 curl -X POST http://localhost:8080/api/sessions/<session-id>/expect \
   -H "X-API-Key: <your-generated-key>" \
   -H "Content-Type: application/json" \
+  -d '{"pattern":"password:","timeout":5000}'
 
-# Get session info (includes total_lines count)
+# Get session info (raw JSON, includes total_lines count)
 curl -X GET http://localhost:8080/api/sessions/<session-id> \
   -H "X-API-Key: <your-generated-key>"
 
-# Get line range from output log (1-based line numbers)
+# Get line range from output log (REST requires both start and end)
 curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?start=1&end=100" \
   -H "X-API-Key: <your-generated-key>"
 
-# Get first 50 lines
-curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?head=50" \
-  -H "X-API-Key: <your-generated-key>"
-
-# Get last 100 lines
-curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?tail=100" \
-  -H "X-API-Key: <your-generated-key>"
-
-
-  -d '{"pattern":"password:","timeout":5000}'
+# For first/last N lines, use the CLI (head/tail are CLI/MCP-only, not REST):
+pshellctl lines <session-id> --head 50
+pshellctl lines <session-id> --tail 100
 ```
 
 ## Architecture
@@ -305,31 +302,27 @@ External Clients (REST/Web/pshellctl)
 ### Quick Links by Role
 
 #### For Users
-- [Getting Started](wiki/getting-started.md) - Quick start guide
-- [User Guide](wiki/user-guide.md) - Complete user documentation
-- [API Reference](wiki/api-reference.md) - REST API documentation
-- [Socket Protocol](docs/SOCKET_PROTOCOL.md) - Unix socket protocol
-- [Examples](wiki/examples.md) - Usage examples
+- [README](README.md) - Quick start and usage examples
+- [Escape Sequences](docs/ESCAPE_SEQUENCES.md) - Escape sequence reference
+- [Scrollback API](docs/API_SCROLLBACK.md) - Scrollback buffer API
+- [Output Logging](docs/OUTPUT_LOGGING.md) - Session output logging and rotation
+- [Default Shell](docs/DEFAULT_SHELL.md) - Configurable default shell
 
 #### For Operators
-- [Installation](wiki/installation.md) - Installation guide
-- [Configuration](wiki/configuration.md) - Configuration reference
-- [Operations](wiki/operations.md) - Day-to-day operations
-- **[Maintenance Guide](docs/MAINTENANCE.md)** - Complete maintenance procedures
-- [Troubleshooting](wiki/troubleshooting.md) - Common issues
+- **[Maintenance Guide](docs/MAINTENANCE.md)** - Installation, configuration, operations, troubleshooting
+- [Security](docs/SECURITY.md) - Multi-user security considerations
+- [Environment Variables](docs/ENVIRONMENT_VARIABLES.md) - Environment variable configuration
+- [TODO](TODO.md) - Known issues and improvement roadmap
 
 #### For Developers
 - [Project Overview](wiki/overview.md) - High-level project description
 - **[Implementation Plan](IMPLEMENTATION_PLAN.md)** - Complete technical plan
 - [Architecture](wiki/architecture.md) - Technical architecture deep dive
-- [Development Setup](wiki/development-setup.md) - Dev environment
-- [Code Structure](wiki/code-structure.md) - Codebase organization
-- [Contributing](wiki/contributing.md) - Contribution guidelines
-
-#### For Maintainers
-- **[Maintenance Guide](docs/MAINTENANCE.md)** - Operations and maintenance
-- [Porting Guide](wiki/porting.md) - Platform porting
-- [Design Decisions](wiki/design-decisions.md) - Design rationale
+- [Wiki Home](wiki/index.md) - Documentation index
+- [MCP Server](docs/MCP_SERVER.md) - MCP server for AI agents
+- [Expect Buffer Implementation](EXPECT_BUFFER_IMPLEMENTATION.md) - Expect buffer internals
+- [Progress](PROGRESS.md) - Implementation status
+- [Changelog](CHANGELOG.md) - Release history
 
 ## Requirements
 
@@ -371,37 +364,35 @@ Edit `/etc/pshell/pshell.conf`:
 
 ```ini
 [daemon]
-pid_file = /var/run/pshell.pid
-log_file = /var/log/pshell.log
+pid_file = /tmp/pshell.pid
+log_file = /tmp/pshell.log
 log_level = info
+use_syslog = false
 
 [http]
 enabled = false  # Disabled by default for security (see SECURITY.md)
-port = 8080
 bind_address = 127.0.0.1
-max_connections = 50
+port = 8080
+static_dir = /usr/local/share/pshell/web
 
 [socket]
 enabled = true
-socket_path = /var/run/pshell.sock
+socket_path = /tmp/pshell.sock
 socket_permissions = 0600
 
 [auth]
 enabled = true
-api_keys = your-api-key-here
+api_keys = key1,key2   # comma-separated list of valid API keys
+# With enabled = true and no keys, the daemon refuses to start.
 
 [sessions]
 max_sessions = 50
-default_rows = 24
-default_cols = 80
-scrollback_lines = 1000
-idle_timeout = 3600
-
-[terminal]
-term_type = xterm-256color
+default_shell = /bin/bash
 ```
 
-**Complete Configuration Reference**: See [Maintenance Guide](docs/MAINTENANCE.md#configuration-reference)
+**Security warning**: leave `[http] enabled = false` (or bind to localhost) unless you also configure `[auth]`; with HTTP enabled and auth disabled, anyone who can reach the port can execute commands. Static files and `/api/health` are always unauthenticated.
+
+**Complete Configuration Reference**: See [Maintenance Guide](docs/MAINTENANCE.md#configuration-options)
 
 ## Control Methods
 
@@ -410,10 +401,10 @@ term_type = xterm-256color
 Fast, local control via Unix domain socket:
 
 ```bash
-pshellctl create bash
+pshellctl create --command bash
 pshellctl list
 pshellctl send <id> "echo hello\n"
-pshellctl attach <id>  # Interactive mode
+pshellctl screen <id>  # View current screen (there is no interactive attach)
 ```
 
 **Advantages**:
@@ -454,7 +445,7 @@ http://localhost:8080/
 
 ```bash
 # Create test session
-SESSION=$(pshellctl create ./myapp)
+SESSION=$(pshellctl create --command './myapp')
 
 # Interact
 pshellctl send $SESSION 'login\n'
@@ -472,7 +463,7 @@ pshellctl screen $SESSION | grep "Dashboard"
 
 ```bash
 # SSH automation
-SESSION=$(pshellctl create "ssh user@host")
+SESSION=$(pshellctl create --command "ssh user@host")
 pshellctl expect $SESSION "password:"
 pshellctl send $SESSION 'mypassword\n'
 pshellctl expect $SESSION "\\$ "
@@ -485,11 +476,11 @@ pshellctl send $SESSION 'uptime\n'
 # .gitlab-ci.yml
 test:
   script:
-    - SESSION=$(pshellctl create ./myapp)
+    - SESSION=$(pshellctl create --command './myapp')
     - pshellctl expect $SESSION "Ready"
     - pshellctl send $SESSION "test\n"
     - pshellctl expect $SESSION "PASS"
-
+```
 
 ## Error Handling and Exit Codes
 
@@ -503,7 +494,7 @@ The `expect` and `expect-incoming` commands return exit codes for proper error h
 **Example with error handling:**
 ```bash
 #!/bin/bash
-SESSION=$(pshellctl create bash)
+SESSION=$(pshellctl create --command bash)
 
 # Send command
 pshellctl send $SESSION "login\n"
@@ -553,9 +544,10 @@ The line-range API provides efficient access to specific ranges of output from s
 ### CLI Usage
 
 ```bash
-# Get current line count
-pshellctl info <session-id>
-# Returns: {..., "total_lines": 12345}
+# Get current line count (raw JSON with total_lines)
+pshell-client info <session-id> | jq .total_lines
+# pshellctl info <session-id> shows basic session info as text (no total_lines);
+# use pshell-client info or REST GET /api/sessions/:id for JSON.
 
 # Get specific line range (lines 100-200)
 pshellctl lines <session-id> --start 100 --end 200
@@ -570,38 +562,33 @@ pshellctl lines <session-id> --tail 100
 ### REST API
 
 ```bash
-# Get session info (includes total_lines)
+# Get session info (raw JSON, includes total_lines)
 curl -X GET http://localhost:8080/api/sessions/<session-id> \
   -H "X-API-Key: <your-key>"
 
-# Get line range
+# Get line range (REST requires both start and end)
 curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?start=100&end=200" \
   -H "X-API-Key: <your-key>"
-
-# Get first/last N lines
-curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?head=50" \
-  -H "X-API-Key: <your-key>"
-
-curl -X GET "http://localhost:8080/api/sessions/<session-id>/lines?tail=100" \
-  -H "X-API-Key: <your-key>"
 ```
+
+**Note**: `head`/`tail` shortcuts exist only in the CLI (`pshellctl lines --head/--tail`) and MCP tools — the REST `/lines` endpoint requires both `start` and `end`.
 
 ### Use Cases
 
 **Monitor New Output:**
 ```bash
 # Save current position
-LAST_LINE=$(pshellctl info <session-id> | jq .total_lines)
+LAST_LINE=$(pshell-client info <session-id> | jq .total_lines)
 
 # Later, get only new lines
-CURRENT=$(pshellctl info <session-id> | jq .total_lines)
+CURRENT=$(pshell-client info <session-id> | jq .total_lines)
 pshellctl lines <session-id> --start $((LAST_LINE + 1)) --end $CURRENT
 ```
 
 **Pagination:**
 ```bash
 # Get total lines
-TOTAL=$(pshellctl info <session-id> | jq .total_lines)
+TOTAL=$(pshell-client info <session-id> | jq .total_lines)
 
 # Page through output (100 lines per page)
 PAGE_SIZE=100
@@ -621,15 +608,12 @@ pshellctl lines <session-id> --tail 1000 | grep ERROR
 pshellctl lines <session-id> --start 5000 --end 5100
 ```
 
-
-```
-
 ### 4. Batch Operations
 
 ```bash
 # Execute on multiple hosts
 for host in host1 host2 host3; do
-  SESSION=$(pshellctl create "ssh admin@$host")
+  SESSION=$(pshellctl create --command "ssh admin@$host")
   pshellctl expect $SESSION "password:"
   pshellctl send $SESSION "$PASSWORD"'\n'
   pshellctl expect $SESSION "\\$ "
@@ -707,17 +691,16 @@ See **[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)** for detailed 14-week de
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+Contributions are welcome: open an issue or pull request at https://github.com/ccw-1/pshell.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+License: TBD (no license file is present yet).
 
 ## Support
 
 - **Issues**: https://github.com/ccw-1/pshell/issues
 - **Documentation**: [Wiki Home](wiki/index.md)
-- **Mailing List**: pshell-users@example.com
 
 ## Acknowledgments
 
@@ -730,14 +713,14 @@ Inspired by:
 
 **Current Status**: Phase 10 Complete - Expect Buffer Feature Implemented ✅
 
-**Completed Phases**:
+**Completed Phases** (numbering matches the Development Roadmap above):
 - ✅ Phase 1-4: Core Infrastructure, HTTP Server, Unix Socket, Session Management
 - ✅ Phase 5: Terminal Emulation (VT100 parser, screen buffer)
 - ✅ Phase 6: REST API (all endpoints functional)
 - ✅ Phase 7: Pattern Matching (expect engine, timeout manager)
 - ✅ Phase 8: Web Interface (HTML/CSS/JS frontend)
-- ✅ Phase 9: HTTP CLI Client (pshell-client)
-- ✅ Phase 10: Socket Control Utility (pshellctl)
+- ✅ Phase 9: CLI Clients (pshell-client HTTP client + pshellctl socket control)
+- ✅ Phase 10: Testing (unit + integration tests via `make test` / `make check`)
 - ✅ **Expect Buffer Feature**: Dedicated buffer with dual-write architecture and line position tracking
 
 **Recent Updates**:
@@ -752,8 +735,8 @@ Inspired by:
 - ✅ Added comprehensive documentation (EXPECT_BUFFER_IMPLEMENTATION.md, MAINTENANCE.md, TODO.md)
 
 **Remaining Work**:
-- ⏳ Phase 11: Additional Testing & Integration Tests
-- ⏳ Phase 12: Final Documentation & Examples
+- ⏳ Phase 11: Documentation & Examples (final pass)
+- ⏳ Test coverage expansion (see [TODO.md](TODO.md) Testing section)
 - ⏳ Known Issues: See [TODO.md](TODO.md) for improvement roadmap
 
 **Build Status**: All binaries compile and run successfully ✅
@@ -767,6 +750,6 @@ See **[PROGRESS.md](PROGRESS.md)** for detailed implementation status.
 ---
 
 **Version**: 1.1.0 (MCP server + async expect)  
-**Last Updated**: 2026-10-10
+**Last Updated**: 2026-10-13
 
 See [CHANGELOG.md](CHANGELOG.md) for release history and [VERSION](VERSION) for the current version.

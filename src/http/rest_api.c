@@ -8,6 +8,11 @@
 #include <string.h>
 #include <stdio.h>
 
+/* REST expects run synchronously on the event-loop thread, so the timeout
+ * caps how long the entire daemon stalls. Socket expects run on a worker
+ * thread and are capped separately (SOCKET_EXPECT_TIMEOUT_MAX_MS). */
+#define REST_EXPECT_TIMEOUT_MAX_MS 30000
+
 /* REST API structure */
 struct rest_api {
     http_server_t *server;
@@ -390,10 +395,18 @@ static void handle_destroy_session(http_request_t *req, http_response_t *resp, v
         return;
     }
     
-    /* Destroy session using session manager */
-    if (!session_manager_destroy_session(api->session_mgr, session_id)) {
+    /* Distinguish "not found" from "destroy refused": destroy_session now
+     * refuses while an expect worker still holds the session pointer. */
+    if (!session_manager_get(api->session_mgr, session_id)) {
         free(session_id);
         http_response_send_error(resp, HTTP_STATUS_NOT_FOUND, "Session not found");
+        return;
+    }
+    
+    if (!session_manager_destroy_session(api->session_mgr, session_id)) {
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_CONFLICT,
+                                 "Cannot destroy session (expect in progress?)");
         return;
     }
     
@@ -507,12 +520,33 @@ static void handle_expect_pattern(http_request_t *req, http_response_t *resp, vo
         return;
     }
     
+    /* The expect runs synchronously on the event-loop thread, so the timeout
+     * directly bounds how long the whole daemon stalls. timeout <= 0 means
+     * "wait forever" in the engine - reject it, and cap the maximum. */
+    if (timeout <= 0 || timeout > REST_EXPECT_TIMEOUT_MAX_MS) {
+        char err[128];
+        snprintf(err, sizeof(err), "timeout must be between 1 and %d ms", REST_EXPECT_TIMEOUT_MAX_MS);
+        json_free(json);
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, err);
+        return;
+    }
+    
     /* Get session */
     session_t *session = session_manager_get(api->session_mgr, session_id);
     if (!session) {
         json_free(json);
         free(session_id);
         http_response_send_error(resp, HTTP_STATUS_NOT_FOUND, "Session not found");
+        return;
+    }
+    
+    /* One expect per session: the expect buffer is shared, and a second
+     * concurrent expect would interleave reads into the same buffer. */
+    if (session_expect_active(session)) {
+        json_free(json);
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_CONFLICT, "Expect already in progress for this session");
         return;
     }
     
@@ -929,6 +963,7 @@ static void handle_get_raw(http_request_t *req, http_response_t *resp, void *use
     free(response);
     free(escaped);
     free(raw_data);
+    free(session_id);
 }
 
 /* Handler: Get scrollback */
@@ -954,6 +989,7 @@ static void handle_get_scrollback(http_request_t *req, http_response_t *resp, vo
     /* Get session */
     session_t *session = session_manager_get(api->session_mgr, session_id);
     if (!session) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_NOT_FOUND, "Session not found");
         return;
     }
@@ -964,11 +1000,13 @@ static void handle_get_scrollback(http_request_t *req, http_response_t *resp, vo
     
     /* Validate parameters */
     if (start_line < 0 || start_line >= scrollback_used) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid start_line");
         return;
     }
     
     if (count <= 0) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Invalid count");
         return;
     }
@@ -1038,6 +1076,7 @@ static void handle_get_lines(http_request_t *req, http_response_t *resp, void *u
     const char *end_str = http_request_get_query(req, "end");
     
     if (!start_str || !end_str) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "Missing start or end parameter");
         return;
     }
@@ -1048,6 +1087,7 @@ static void handle_get_lines(http_request_t *req, http_response_t *resp, void *u
     /* Get session */
     session_t *session = session_manager_get(api->session_mgr, session_id);
     if (!session) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_NOT_FOUND, "Session not found");
         return;
     }
@@ -1057,16 +1097,19 @@ static void handle_get_lines(http_request_t *req, http_response_t *resp, void *u
     
     /* Validate parameters */
     if (start_line < 1) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "start must be >= 1");
         return;
     }
     
     if (end_line < start_line) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "end must be >= start");
         return;
     }
     
     if (start_line > (int)total_lines) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_BAD_REQUEST, "start exceeds total lines");
         return;
     }
@@ -1076,15 +1119,20 @@ static void handle_get_lines(http_request_t *req, http_response_t *resp, void *u
     char *content = session_read_line_range(session, start_line, end_line, &content_len);
     
     if (!content) {
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to read line range");
         return;
     }
     
     /* Build JSON response - need to escape content */
+    /* Worst case every byte expands to a two-char escape (\n -> \\n). The old
+     * content_len*2 bound was one byte short of worst case per char plus the
+     * fixed header, which could truncate the JSON. Size it safely. */
     size_t response_capacity = content_len * 2 + 1024;
     char *response_json = malloc(response_capacity);
     if (!response_json) {
         free(content);
+        free(session_id);
         http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Out of memory");
         return;
     }
@@ -1117,4 +1165,5 @@ static void handle_get_lines(http_request_t *req, http_response_t *resp, void *u
     
     free(content);
     free(response_json);
+    free(session_id);
 }

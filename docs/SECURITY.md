@@ -22,7 +22,7 @@ enabled = false
 
 [socket]
 enabled = true
-socket_path = /var/run/pshell.sock
+socket_path = /tmp/pshell.sock
 socket_permissions = 0600  # Owner only
 ```
 
@@ -96,7 +96,7 @@ enabled = false  # DISABLED for security
 
 [socket]
 enabled = true
-socket_path = /var/run/pshell.sock
+socket_path = /tmp/pshell.sock
 socket_permissions = 0600  # Owner only
 ```
 
@@ -107,7 +107,7 @@ enabled = false
 
 [socket]
 enabled = true
-socket_path = /var/run/pshell.sock
+socket_path = /tmp/pshell.sock
 socket_permissions = 0660  # Owner + group
 # Ensure socket file is owned by appropriate group
 ```

@@ -11,7 +11,6 @@ Add to `pshell.conf`:
 ```ini
 [sessions]
 max_sessions = 100
-session_timeout = 3600
 default_shell = /bin/bash
 ```
 
@@ -35,16 +34,18 @@ curl -X POST http://localhost:8080/api/sessions \
   -d '{"command":"zsh","rows":24,"cols":80}'
 ```
 
-### Socket Protocol
+### Socket Protocol (pshellctl)
 
-**Without command:**
+**Important**: `pshellctl` always sends an explicit command (defaulting to
+`bash`), so the daemon-side `default_shell` fallback is not reachable via
+pshellctl — it applies to REST requests that omit `command`:
+
 ```bash
+# Runs bash (pshellctl's own default), not the daemon's default_shell
 pshellctl create
-```
 
-**With explicit command:**
-```bash
-pshellctl create bash
+# Explicit command
+pshellctl create --command zsh
 ```
 
 ## Implementation Details
@@ -90,14 +91,6 @@ pshellctl create bash
 - Default shell runs with daemon's privileges (unless privilege separation is configured)
 - Validate shell path exists and is executable
 - Consider restricting to approved shells via configuration validation
-
-## Known Issues
-
-**HTTP Server Crash (Unrelated)**:
-- Current HTTP server implementation has a crash bug on request handling
-- Affects all endpoints (GET, POST)
-- Prevents testing of default shell feature via REST API
-- Socket protocol implementation is complete and ready for testing once HTTP server is fixed
 
 ## Future Enhancements
 

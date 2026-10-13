@@ -228,7 +228,12 @@ static json_value_t* parse_value(parser_t *p) {
     
     if (c == '"') {
         char *str = parse_string_value(p);
-        return str ? json_string_create(str) : NULL;
+        if (!str) return NULL;
+        /* json_string_create() strdups its argument; free the parsed copy so
+         * each parsed string does not leak one heap block. */
+        json_value_t *val = json_string_create(str);
+        free(str);
+        return val;
     } else if (c == '{') {
         return parse_object(p);
     } else if (c == '[') {

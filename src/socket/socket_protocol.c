@@ -19,6 +19,12 @@
 #include <pthread.h>
 #include <sys/socket.h>
 
+/* Socket expects run on a detached worker thread, so a longer cap is safe
+ * (it does not stall the event loop). timeout <= 0 still means "wait
+ * forever" in the engine, which would pin the session's expect slot and the
+ * worker thread indefinitely, so it is rejected. */
+#define SOCKET_EXPECT_TIMEOUT_MAX_MS 600000  /* 10 minutes */
+
 /* External function to get default shell */
 extern const char* get_default_shell(void);
 
@@ -646,6 +652,17 @@ static void handle_expect_common(socket_connection_t *conn, json_value_t *params
     
     if (!session_id || !pattern) {
         send_error(conn, "Missing session id or pattern");
+        return;
+    }
+    
+    /* Reject an unbounded wait (timeout <= 0 means "forever" in the engine)
+     * and cap the maximum so the worker thread and expect slot cannot be
+     * pinned indefinitely. */
+    if (timeout <= 0 || timeout > SOCKET_EXPECT_TIMEOUT_MAX_MS) {
+        char err[128];
+        snprintf(err, sizeof(err), "timeout must be between 1 and %d ms",
+                 SOCKET_EXPECT_TIMEOUT_MAX_MS);
+        send_error(conn, err);
         return;
     }
     

@@ -21,6 +21,8 @@
 /* Forward declarations */
 static void session_pty_callback(int fd, io_event_type_t events, void *user_data);
 static void session_flush_output_log(session_t *session);
+static void session_close_output_file(session_t *session);
+static void reap_child_blocking(pid_t pid);
 
 /* Session structure */
 struct session {
@@ -119,27 +121,104 @@ session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mu
     return mgr;
 }
 
+/* Free a session's heap/file/PTY resources (but NOT the per-slot mutex and
+ * without touching process lifetime). Caller is responsible for having
+ * already stopped the process and for holding expect_lock if needed.
+ * expect_buffer is freed under its own lock. */
+static void session_free_resources(session_t *session) {
+    if (!session) return;
+    
+    /* Close output log file if open */
+    session_close_output_file(session);
+    
+    /* Destroy PTY */
+    if (session->pty) {
+        pty_destroy(session->pty);
+        session->pty = NULL;
+    }
+    
+    /* Destroy terminal emulation */
+    if (session->screen) {
+        screen_buffer_destroy(session->screen);
+        session->screen = NULL;
+    }
+    
+    /* Free raw buffer */
+    if (session->raw_buffer) {
+        free(session->raw_buffer);
+        session->raw_buffer = NULL;
+    }
+    
+    /* Free expect buffer and reset expect state */
+    pthread_mutex_lock(&session->expect_lock);
+    free(session->expect_buffer);
+    session->expect_buffer = NULL;
+    session->expect_buffer_size = 0;
+    session->expect_buffer_used = 0;
+    session->expect_active = false;
+    pthread_mutex_unlock(&session->expect_lock);
+    
+    /* Reset line-tracking state so a reused slot starts clean */
+    session->current_line_no = 1;
+    session->current_line_offset = 0;
+}
+
+/* Stop a session's process group and reap it. Uses SIGTERM, a short grace
+ * period, then SIGKILL + blocking reap so no zombie is left behind. */
+static void session_kill_and_reap(session_t *session) {
+    if (!session || session->pid <= 0) return;
+    
+    /* Kill the whole process group. The child called setsid(), so its PGID
+     * equals its PID; signalling the group also reaps grandchildren (e.g.
+     * ssh under the session shell) that hold the PTY slave. */
+    kill(-session->pid, SIGTERM);
+    
+    bool alive = true;
+    for (int i = 0; i < 10; i++) {
+        int status;
+        pid_t result = waitpid(session->pid, &status, WNOHANG);
+        if (result > 0 || (result < 0 && errno == ECHILD)) {
+            alive = false;
+            break;
+        }
+        usleep(100000);  /* 100ms */
+    }
+    
+    if (alive) {
+        kill(-session->pid, SIGKILL);
+        while (waitpid(session->pid, NULL, 0) < 0 && errno == EINTR) {
+            /* retry on signal interruption */
+        }
+    }
+}
+
 void session_manager_destroy(session_manager_t *mgr) {
     if (!mgr) return;
     
-    /* Destroy all active sessions */
+    /* Stop and reap every active session's process group FIRST, so expect
+     * worker threads blocked on a PTY hit EOF and release the session
+     * before we free its buffers. */
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (mgr->sessions[i].active) {
+            session_kill_and_reap(&mgr->sessions[i]);
+        }
+    }
+    
+    /* Free per-session resources (screen, raw/expect buffers, PTY, output) */
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (mgr->sessions[i].active) {
+            if (mgr->mux && mgr->sessions[i].pty) {
+                int pty_fd = pty_get_master_fd(mgr->sessions[i].pty);
+                if (pty_fd >= 0) io_multiplexer_remove(mgr->mux, pty_fd);
+            }
+            session_free_resources(&mgr->sessions[i]);
+            mgr->sessions[i].active = false;
+        }
+    }
+    
+    /* Destroy mutexes only after all sessions are quiesced */
     for (int i = 0; i < MAX_SESSIONS; i++) {
         pthread_mutex_destroy(&mgr->sessions[i].expect_lock);
-        if (mgr->sessions[i].active) {
-            session_t *session = &mgr->sessions[i];
-            
-            /* Kill process */
-            if (session->pid > 0) {
-                kill(session->pid, SIGTERM);
-                waitpid(session->pid, NULL, WNOHANG);
-            }
-            
-            /* Destroy PTY */
-            if (session->pty) {
-                pty_destroy(session->pty);
-                session->pty = NULL;
-            }
-        }
     }
     
     free(mgr);
@@ -351,6 +430,12 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                 }
             }
             
+            /* Line tracking + expect-buffer append run under expect_lock:
+             * the expect worker snapshots current_line_no while this callback
+             * updates it, so the counter and buffer must move together or the
+             * worker computes relative lines against a torn snapshot. */
+            pthread_mutex_lock(&session->expect_lock);
+            
             for (ssize_t i = 0; i < n; i++) {
                 if (buffer[i] == '\n') {
                     session->current_line_no++;
@@ -363,7 +448,6 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
             /* Also write to expect buffer if expect is active.
              * Locked: the expect worker thread reads this buffer while the
              * event loop (this callback) appends to it. */
-            pthread_mutex_lock(&session->expect_lock);
             if (session->expect_active && session->expect_buffer) {
                 size_t before = session->expect_buffer_used;
                 for (ssize_t i = 0; i < n; i++) {
@@ -442,8 +526,17 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     
     /* Generate session ID */
     char uuid[UUID_STRING_LENGTH];
-    uuid_generate(uuid);
+    if (!uuid_generate(uuid)) {
+        log_error("Failed to generate session ID (is /dev/urandom readable?)");
+        screen_buffer_destroy(session->screen);
+        reap_child_blocking(session->pid);
+        pty_destroy(session->pty);
+        session->pty = NULL;
+        session->screen = NULL;
+        return NULL;
+    }
     strncpy(session->id, uuid, sizeof(session->id) - 1);
+    session->id[sizeof(session->id) - 1] = '\0';
     
     /* Copy command */
     strncpy(session->command, command, sizeof(session->command) - 1);
@@ -486,8 +579,9 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     session->screen = screen_buffer_create(session->rows, session->cols, scrollback);
     if (!session->screen) {
         log_error("Failed to create screen buffer");
-        kill(session->pid, SIGTERM);
-        waitpid(session->pid, NULL, WNOHANG);
+        /* Reap the child: WNOHANG would leave a permanent zombie because the
+         * slot is never activated, so cleanup_dead_sessions never sees it. */
+        reap_child_blocking(session->pid);
         pty_destroy(session->pty);
         session->pty = NULL;
         return NULL;
@@ -499,8 +593,7 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     if (!session->raw_buffer) {
         log_error("Failed to allocate raw buffer");
         screen_buffer_destroy(session->screen);
-        kill(session->pid, SIGTERM);
-        waitpid(session->pid, NULL, WNOHANG);
+        reap_child_blocking(session->pid);
         pty_destroy(session->pty);
         session->pty = NULL;
         session->screen = NULL;
@@ -546,9 +639,14 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     if (pty_fd >= 0 && mgr->mux) {
         if (!io_multiplexer_add(mgr->mux, pty_fd, IO_EVENT_READ, session_pty_callback, session)) {
             log_error("Failed to add PTY FD to multiplexer");
+            /* session->active was set above: clear it so the slot does not
+             * look occupied, and free everything allocated for this create
+             * (raw_buffer was already allocated at this point). */
+            session->active = false;
             screen_buffer_destroy(session->screen);
-            kill(session->pid, SIGTERM);
-            waitpid(session->pid, NULL, WNOHANG);
+            free(session->raw_buffer);
+            session->raw_buffer = NULL;
+            reap_child_blocking(session->pid);
             pty_destroy(session->pty);
             session->pty = NULL;
             session->screen = NULL;
@@ -607,6 +705,25 @@ session_t* session_manager_get(session_manager_t *mgr, const char *session_id) {
     return NULL;
 }
 
+/* Terminate a not-yet-tracked child (failed create path) and reap it.
+ * SIGTERM first, then SIGKILL after a short grace period, then a blocking
+ * waitpid so no zombie is left behind. */
+static void reap_child_blocking(pid_t pid) {
+    if (pid <= 0) return;
+    
+    kill(pid, SIGTERM);
+    for (int i = 0; i < 10; i++) {
+        int status;
+        pid_t result = waitpid(pid, &status, WNOHANG);
+        if (result > 0 || (result < 0 && errno == ECHILD)) return;
+        usleep(100000);  /* 100ms */
+    }
+    kill(pid, SIGKILL);
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+        /* retry on signal interruption */
+    }
+}
+
 bool session_manager_destroy_session(session_manager_t *mgr, const char *session_id) {
     if (!mgr || !session_id) return false;
     
@@ -616,26 +733,20 @@ bool session_manager_destroy_session(session_manager_t *mgr, const char *session
         return false;
     }
     
-    /* Kill process */
-    if (session->pid > 0) {
-        log_debug("Killing process: pid=%d", session->pid);
-        kill(session->pid, SIGTERM);
-        
-        /* Wait briefly for process to exit */
-        for (int i = 0; i < 10; i++) {
-            int status;
-            pid_t result = waitpid(session->pid, &status, WNOHANG);
-            if (result > 0) break;
-            usleep(100000);  /* 100ms */
-        }
-        
-        /* Force kill if still alive */
-        kill(session->pid, SIGKILL);
-        waitpid(session->pid, NULL, WNOHANG);
+    /* Refuse to destroy a session with an expect in flight: the expect
+     * worker holds a pointer to this session, and the slot is immediately
+     * reusable - destroying now would free memory under the worker and
+     * could corrupt an unrelated session that reuses the slot. Callers
+     * (REST/socket destroy handlers, dead-session cleanup) surface this
+     * as a destroy failure. */
+    if (session_expect_active(session)) {
+        log_warn("Refusing to destroy session %s: expect in progress", session_id);
+        return false;
     }
     
-    /* Close output log file if open */
-    session_close_output_file(session);
+    /* Kill the whole process group and reap (SIGTERM, grace, SIGKILL) */
+    log_debug("Killing process group for session %s: pgid=%d", session_id, session->pid);
+    session_kill_and_reap(session);
     
     /* Remove PTY FD from multiplexer */
     if (session->pty && mgr->mux) {
@@ -646,23 +757,10 @@ bool session_manager_destroy_session(session_manager_t *mgr, const char *session
         }
     }
     
-    /* Destroy PTY */
-    if (session->pty) {
-        pty_destroy(session->pty);
-        session->pty = NULL;
-    }
-    
-    /* Destroy terminal emulation */
-    if (session->screen) {
-        screen_buffer_destroy(session->screen);
-        session->screen = NULL;
-    }
-    
-    /* Free raw buffer */
-    if (session->raw_buffer) {
-        free(session->raw_buffer);
-        session->raw_buffer = NULL;
-    }
+    /* Free PTY, screen, raw/expect buffers, and output log. The guard above
+     * ensures no worker is inside the buffer, and slots are reused so every
+     * piece of per-session expect state is cleared here. */
+    session_free_resources(session);
     
     /* Mark as inactive */
     session->active = false;
@@ -733,7 +831,9 @@ bool session_get_info(const session_t *session, session_info_t *info) {
     if (!session || !info) return false;
     
     strncpy(info->id, session->id, sizeof(info->id) - 1);
+    info->id[sizeof(info->id) - 1] = '\0';
     strncpy(info->command, session->command, sizeof(info->command) - 1);
+    info->command[sizeof(info->command) - 1] = '\0';
     info->rows = session->rows;
     info->cols = session->cols;
     info->state = session->state;

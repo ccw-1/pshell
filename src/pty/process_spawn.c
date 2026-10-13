@@ -4,17 +4,37 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <signal.h>
 #include <errno.h>
 #include <ctype.h>
 #include <pwd.h>
 #include <grp.h>
+#include <stdio.h>
 
 #ifndef _GNU_SOURCE
 extern int execvpe(const char *file, char *const argv[], char *const envp[]);
 #endif
 
 extern char **environ;
+
+/* Hard ceiling on the FD scan range when closing inherited descriptors in
+ * the child before exec. */
+#define MAX_INHERITED_FD 4096
+
+/* Async-signal-safe child-side error report. Between fork() and exec*() the
+ * child must not call malloc()-backed functions: log_error() takes the
+ * logger mutex and allocates, which can deadlock (the mutex may be held by a
+ * thread that was interrupted mid-log) or corrupt the heap. write() to an
+ * already-open fd is safe. stderr is redirected to the PTY slave, so the
+ * message lands in the session output where it is actually visible. */
+static void child_fatal(const char *msg) {
+    if (msg) {
+        ssize_t ignored = write(STDERR_FILENO, msg, strlen(msg));
+        (void)ignored;
+    }
+    _exit(1);
+}
 
 /* Helper: Drop privileges to specified user/group */
 static bool drop_privileges(const process_credentials_t *creds) {
@@ -138,46 +158,67 @@ pid_t process_spawn_argv_with_creds(pty_t *pty, char **argv, char **env, const p
     }
     
     if (pid == 0) {
-        // Child process
+        // Child process. From here until exec*() we must only use
+        // async-signal-safe calls: no malloc(), no log_error()/log_debug()
+        // (they take the logger mutex and allocate, which can deadlock if the
+        // mutex is held by an interrupted thread). Report errors via
+        // child_fatal(), which write()s to the now-redirected stderr.
         
-        // Create new session
+        // Create new session. setsid() makes this child a session AND process
+        // group leader, so its PGID == its PID. That lets the daemon later
+        // signal the whole group (kill(-pid)) to reap grandchildren such as
+        // ssh that hold the PTY slave.
         if (setsid() < 0) {
-            log_error("setsid failed: %s", strerror(errno));
-            _exit(1);
+            child_fatal("pshell: setsid failed\n");
         }
         
         // Set controlling terminal
         int slave_fd = pty_get_slave_fd(pty);
         if (slave_fd < 0) {
-            log_error("Failed to get slave FD");
-            _exit(1);
+            child_fatal("pshell: failed to get slave FD\n");
         }
         
-        // Configure slave terminal to raw mode BEFORE redirecting
-        struct termios tios;
-        if (tcgetattr(slave_fd, &tios) == 0) {
-            cfmakeraw(&tios);
-            tcsetattr(slave_fd, TCSANOW, &tios);
+        // Make this PTY the controlling terminal. After setsid() the child has
+        // no ctty, so without TIOCSCTTY terminal-generated signals (Ctrl-C ->
+        // SIGINT, Ctrl-\ -> SIGQUIT, Ctrl-Z -> SIGTSTP) are never delivered.
+        // Must happen after setsid() and before the slave fd is closed.
+        if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) {
+            child_fatal("pshell: TIOCSCTTY failed\n");
         }
         
         // Redirect stdin, stdout, stderr to slave PTY
         if (dup2(slave_fd, STDIN_FILENO) < 0 ||
             dup2(slave_fd, STDOUT_FILENO) < 0 ||
             dup2(slave_fd, STDERR_FILENO) < 0) {
-            log_error("dup2 failed: %s", strerror(errno));
-            _exit(1);
+            child_fatal("pshell: dup2 failed\n");
         }
         
         // Close master and slave FDs
-        close(pty_get_master_fd(pty));
+        int master_fd = pty_get_master_fd(pty);
+        if (master_fd > STDERR_FILENO) {
+            close(master_fd);
+        }
         if (slave_fd > STDERR_FILENO) {
             close(slave_fd);
         }
         
+        // Close every other inherited descriptor before exec. The daemon holds
+        // the HTTP listener, the unix socket listener, PTY masters for other
+        // sessions, log files, and client connections; leaking those into the
+        // child keeps ports and sockets bound after the daemon dies (observed:
+        // orphaned children holding the HTTP listener) and pins PTYs open. FDs
+        // 0/1/2 are the redirected slave and are preserved.
+        long max_fd = sysconf(_SC_OPEN_MAX);
+        if (max_fd < 0 || max_fd > MAX_INHERITED_FD) {
+            max_fd = MAX_INHERITED_FD;
+        }
+        for (int fd = STDERR_FILENO + 1; fd < (int)max_fd; fd++) {
+            close(fd);
+        }
+        
         // Drop privileges if credentials provided
         if (creds && !drop_privileges(creds)) {
-            log_error("Failed to drop privileges");
-            _exit(1);
+            child_fatal("pshell: failed to drop privileges\n");
         }
         
         // Set TERM environment variable
@@ -191,7 +232,15 @@ pid_t process_spawn_argv_with_creds(pty_t *pty, char **argv, char **env, const p
         }
         
         // If we get here, exec failed
-        log_error("exec failed: %s", strerror(errno));
+        {
+            char buf[128];
+            int n = snprintf(buf, sizeof(buf), "pshell: exec %s failed: %s\n",
+                             argv[0], strerror(errno));
+            if (n > 0) {
+                ssize_t ignored = write(STDERR_FILENO, buf, (size_t)n);
+                (void)ignored;
+            }
+        }
         _exit(127);
     }
     
