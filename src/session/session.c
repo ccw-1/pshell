@@ -839,6 +839,7 @@ bool session_manager_destroy_session(session_manager_t *mgr, const char *session
     
     log_info("Destroyed session: id=%s", session_id);
     
+    pthread_mutex_unlock(&mgr->lock);
     return true;
 }
 

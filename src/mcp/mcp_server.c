@@ -250,12 +250,18 @@ static bool write_spawn_config(void) {
         return false;
     }
 
+    /* Override daemon pid_file and log_file to writable /tmp paths,
+     * and ensure socket path matches what the MCP server uses.
+     * These MUST come first because config_get_string returns the FIRST match. */
+    fprintf(out, "# MCP auto-start overrides\n");
     fprintf(out, "[daemon]\n");
     fprintf(out, "pid_file = /tmp/pshell-mcp.pid\n");
     fprintf(out, "log_file = /tmp/pshell-mcp.log\n");
     fprintf(out, "[socket]\n");
     fprintf(out, "socket_path = %s\n", g_socket_path);
 
+    /* Append user's config - these come second so they don't override
+     * our required settings, but can provide additional config. */
     if (g_config_path) {
         FILE *in = fopen(g_config_path, "r");
         if (in) {

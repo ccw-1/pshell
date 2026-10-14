@@ -30,7 +30,7 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms, expe
     
     ctx->session = session;
     ctx->timeout_ms = timeout_ms;
-    ctx->start_time = time(NULL);
+    ctx->start_time = get_time_ms();
     ctx->flags = flags;
     ctx->snapshot_line = session_get_current_line_no(session);
     ctx->snapshot_offset = 0;
@@ -118,7 +118,7 @@ bool expect_is_timeout(const expect_context_t *ctx) {
         return false;
     }
     
-    long long elapsed = get_time_ms() - (ctx->start_time * 1000);
+    long long elapsed = get_time_ms() - ctx->start_time;
     return elapsed >= ctx->timeout_ms;
 }
 
@@ -127,7 +127,7 @@ int expect_get_remaining_timeout(const expect_context_t *ctx) {
         return -1;
     }
     
-    long long elapsed = get_time_ms() - (ctx->start_time * 1000);
+    long long elapsed = get_time_ms() - ctx->start_time;
     long long remaining = ctx->timeout_ms - elapsed;
     
     return remaining > 0 ? (int)remaining : 0;
