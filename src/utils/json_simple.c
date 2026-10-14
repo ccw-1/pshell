@@ -32,6 +32,7 @@ typedef struct {
     const char *json;
     size_t pos;
     size_t len;
+    int depth;
 } parser_t;
 
 /* Forward declarations */
@@ -84,8 +85,39 @@ static char* parse_string_value(parser_t *p) {
                 case 'n': str[j++] = '\n'; break;
                 case 't': str[j++] = '\t'; break;
                 case 'r': str[j++] = '\r'; break;
+                case 'b': str[j++] = '\b'; break;
+                case 'f': str[j++] = '\f'; break;
                 case '\\': str[j++] = '\\'; break;
                 case '"': str[j++] = '"'; break;
+                case 'u': {
+                    /* Decode \uXXXX (4 hex digits) */
+                    if (i + 4 < end) {
+                        unsigned int codepoint = 0;
+                        for (int k = 0; k < 4; k++) {
+                            char c = p->json[i + 1 + k];
+                            codepoint <<= 4;
+                            if (c >= '0' && c <= '9') codepoint |= (unsigned int)(c - '0');
+                            else if (c >= 'a' && c <= 'f') codepoint |= (unsigned int)(c - 'a' + 10);
+                            else if (c >= 'A' && c <= 'F') codepoint |= (unsigned int)(c - 'A' + 10);
+                            else { /* Invalid hex - output as-is */ str[j++] = p->json[i + k]; continue; }
+                        }
+                        i += 4;
+                        /* Encode as UTF-8 */
+                        if (codepoint < 0x80) {
+                            str[j++] = (char)codepoint;
+                        } else if (codepoint < 0x800) {
+                            str[j++] = (char)(0xC0 | (codepoint >> 6));
+                            str[j++] = (char)(0x80 | (codepoint & 0x3F));
+                        } else {
+                            str[j++] = (char)(0xE0 | (codepoint >> 12));
+                            str[j++] = (char)(0x80 | ((codepoint >> 6) & 0x3F));
+                            str[j++] = (char)(0x80 | (codepoint & 0x3F));
+                        }
+                    } else {
+                        str[j++] = p->json[i];
+                    }
+                    break;
+                }
                 default: str[j++] = p->json[i]; break;
             }
         } else {
@@ -101,12 +133,16 @@ static char* parse_string_value(parser_t *p) {
 
 static json_value_t* parse_number(parser_t *p) {
     size_t start = p->pos;
-    
+
     if (p->json[p->pos] == '-') p->pos++;
-    
+
+    size_t digits_start = p->pos;
     while (p->pos < p->len && isdigit((unsigned char)p->json[p->pos])) {
         p->pos++;
     }
+
+    /* Must have at least one digit */
+    if (p->pos == digits_start) return NULL;
     
     if (p->pos < p->len && p->json[p->pos] == '.') {
         p->pos++;
@@ -133,39 +169,46 @@ static json_value_t* parse_number(parser_t *p) {
 
 static json_value_t* parse_object(parser_t *p) {
     if (!expect_char(p, '{')) return NULL;
-    
+
+    p->depth++;
+    if (p->depth > 200) { p->depth--; return NULL; }
+
     json_value_t *obj = json_object_create();
-    if (!obj) return NULL;
-    
+    if (!obj) { p->depth--; return NULL; }
+
     skip_whitespace(p);
     if (p->pos < p->len && p->json[p->pos] == '}') {
         p->pos++;
+        p->depth--;
         return obj;
     }
-    
+
     while (p->pos < p->len) {
         char *key = parse_string_value(p);
         if (!key) {
             json_free(obj);
+            p->depth--;
             return NULL;
         }
-        
+
         if (!expect_char(p, ':')) {
             free(key);
             json_free(obj);
+            p->depth--;
             return NULL;
         }
-        
+
         json_value_t *val = parse_value(p);
         if (!val) {
             free(key);
             json_free(obj);
+            p->depth--;
             return NULL;
         }
-        
+
         json_object_set(obj, key, val);
         free(key);
-        
+
         skip_whitespace(p);
         if (p->pos < p->len && p->json[p->pos] == ',') {
             p->pos++;
@@ -173,36 +216,43 @@ static json_value_t* parse_object(parser_t *p) {
         }
         break;
     }
-    
+
     if (!expect_char(p, '}')) {
+        p->depth--;
         json_free(obj);
         return NULL;
     }
-    
+
+    p->depth--;
     return obj;
 }
 
 static json_value_t* parse_array(parser_t *p) {
     if (!expect_char(p, '[')) return NULL;
-    
+
+    p->depth++;
+    if (p->depth > 200) { p->depth--; return NULL; }
+
     json_value_t *arr = json_array_create();
-    if (!arr) return NULL;
-    
+    if (!arr) { p->depth--; return NULL; }
+
     skip_whitespace(p);
     if (p->pos < p->len && p->json[p->pos] == ']') {
         p->pos++;
+        p->depth--;
         return arr;
     }
-    
+
     while (p->pos < p->len) {
         json_value_t *val = parse_value(p);
         if (!val) {
             json_free(arr);
+            p->depth--;
             return NULL;
         }
-        
+
         json_array_add(arr, val);
-        
+
         skip_whitespace(p);
         if (p->pos < p->len && p->json[p->pos] == ',') {
             p->pos++;
@@ -210,19 +260,24 @@ static json_value_t* parse_array(parser_t *p) {
         }
         break;
     }
-    
+
     if (!expect_char(p, ']')) {
+        p->depth--;
         json_free(arr);
         return NULL;
     }
-    
+
+    p->depth--;
     return arr;
 }
 
 static json_value_t* parse_value(parser_t *p) {
     skip_whitespace(p);
-    
+
     if (p->pos >= p->len) return NULL;
+
+    /* Limit nesting depth to prevent stack overflow */
+    if (p->depth > 200) return NULL;
     
     char c = p->json[p->pos];
     
@@ -256,14 +311,25 @@ static json_value_t* parse_value(parser_t *p) {
 
 json_value_t* json_parse(const char *json) {
     if (!json) return NULL;
-    
+
     parser_t p = {
         .json = json,
         .pos = 0,
-        .len = strlen(json)
+        .len = strlen(json),
+        .depth = 0
     };
-    
-    return parse_value(&p);
+
+    json_value_t *result = parse_value(&p);
+    if (!result) return NULL;
+
+    /* Reject trailing garbage */
+    skip_whitespace(&p);
+    if (p.pos != p.len) {
+        json_free(result);
+        return NULL;
+    }
+
+    return result;
 }
 
 void json_free(json_value_t *val) {
@@ -475,9 +541,36 @@ static size_t stringify_internal(const json_value_t *val, char *buf, size_t size
         case JSON_NUMBER:
             pos += snprintf(buf + pos, size - pos, "%.17g", val->value.number_val);
             break;
-        case JSON_STRING:
-            pos += snprintf(buf + pos, size - pos, "\"%s\"", val->value.string_val);
+        case JSON_STRING: {
+            pos += snprintf(buf + pos, size - pos, "\"");
+            if (val->value.string_val) {
+                for (const char *p = val->value.string_val; *p && pos < size - 8; p++) {
+                    char c = *p;
+                    switch (c) {
+                        case '"':  buf[pos++] = '\\'; buf[pos++] = '"';  break;
+                        case '\\': buf[pos++] = '\\'; buf[pos++] = '\\'; break;
+                        case '\n': buf[pos++] = '\\'; buf[pos++] = 'n';  break;
+                        case '\r': buf[pos++] = '\\'; buf[pos++] = 'r';  break;
+                        case '\t': buf[pos++] = '\\'; buf[pos++] = 't';  break;
+                        default:
+                            if ((unsigned char)c < 0x20) {
+                                int n = snprintf(buf + pos, size - pos, "\\u%04x", (unsigned char)c);
+                                if (n < 0 || (size_t)n >= size - pos) {
+                                    pos = size - 1;
+                                    buf[pos] = '\0';
+                                    return pos;
+                                }
+                                pos += (size_t)n;
+                            } else {
+                                buf[pos++] = c;
+                            }
+                            break;
+                    }
+                }
+            }
+            pos += snprintf(buf + pos, size - pos, "\"");
             break;
+        }
         case JSON_ARRAY: {
             pos += snprintf(buf + pos, size - pos, "[");
             json_element_t *elem = val->value.array_val->elements;

@@ -49,7 +49,7 @@ curl http://127.0.0.1:8080/api/sessions
 - Non-blocking I/O
 - Event loop integration
 
-**REST API Endpoints** (14 routes):
+**REST API Endpoints** (15 routes):
 - `GET /api/health` - Health check (unauthenticated)
 - `GET /api/status` - Server status
 - `POST /api/sessions` - Create session (supports `scrollback_lines` parameter)

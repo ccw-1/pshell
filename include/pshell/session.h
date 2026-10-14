@@ -135,13 +135,6 @@ int session_manager_list(session_manager_t *mgr, session_info_t *infos, int max_
 int session_manager_count(const session_manager_t *mgr);
 
 /**
- * Cleanup dead sessions
- * @param mgr Session manager
- * @return Number of sessions cleaned up
- */
-int session_manager_cleanup(session_manager_t *mgr);
-
-/**
  * Get session file descriptor
  * @param session Session
  * @return PTY master file descriptor or -1 on error

@@ -1,6 +1,7 @@
 #include "pshell/screen_buffer.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdint.h>
 
@@ -120,8 +121,13 @@ void screen_buffer_destroy(screen_buffer_t *screen) {
 int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
     if (rows <= 0 || cols <= 0) return -1;
     
+    /* Check for integer overflow in allocation size */
+    if ((size_t)rows > SIZE_MAX / (size_t)cols / sizeof(char_cell_t)) {
+        return -1;
+    }
+
     /* Allocate new cells */
-    char_cell_t *new_cells = calloc(rows * cols, sizeof(char_cell_t));
+    char_cell_t *new_cells = calloc((size_t)rows * cols, sizeof(char_cell_t));
     if (!new_cells) return -1;
     
     /* Copy old content (as much as fits) */
@@ -335,7 +341,7 @@ void screen_buffer_scroll_up(screen_buffer_t *screen, int n) {
     }
     
     /* Scroll lines up */
-    for (int i = 0; i < n && top + i < bottom; i++) {
+    for (int i = 0; i < n; i++) {
         /* Move lines up */
         for (int r = top; r < bottom; r++) {
             memcpy(&screen->cells[r * screen->cols],
@@ -357,7 +363,7 @@ void screen_buffer_scroll_down(screen_buffer_t *screen, int n) {
     int bottom = screen->scroll_bottom;
     
     /* Scroll lines down */
-    for (int i = 0; i < n && bottom - i > top; i++) {
+    for (int i = 0; i < n; i++) {
         /* Move lines down */
         for (int r = bottom; r > top; r--) {
             memcpy(&screen->cells[r * screen->cols],

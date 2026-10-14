@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The current version is defined in [VERSION](VERSION) and `include/pshell/version.h`.
 
+## [1.2.0] - 2026-10-14
+
+### Fixed — Critical Memory Corruption & Security (13 bugs)
+
+- **C1**: Off-by-one heap overflow in expect buffer seeding (`session.c:1098`) — clamp to `size - 1`
+- **C2**: Buffer overflow in REST API JSON escaping (`rest_api.c:715,810`) — loop bound `-7` not `-2`
+- **C3**: Stack overflow in JSON parser via deep nesting (`json_simple.c`) — depth limit 200
+- **C4**: Integer overflow in CSI parameter parsing (`vt100_parser.c:223`) — clamp before multiply
+- **C5**: Integer overflow in screen buffer resize (`screen_buffer.c:124`) — `SIZE_MAX` check
+- **C6**: Partial read of message body (`socket_server.c`) — read-all loops
+- **C7**: Partial write of response (`socket_protocol.c`) — write-all loops
+- **C8**: Client partial write of request (`socket_client.c`) — write-all loops
+- **C9**: No timeout on client response read — `SO_RCVTIMEO` 60s
+- **C10**: `strdup` return not checked (`socket_server.c`) — NULL check + free
+- **C11**: Integer overflow in scrollback count clamp — reordered comparison
+- **C12**: `end_line` unbounded (memory exhaustion DoS) — clamp to `total_lines`
+- **C13**: Data race on `raw_buffer` — `raw_buffer_lock` mutex
+
+### Fixed — High Severity Data Loss & Reliability (22 bugs)
+
+- **H1**: Data loss on partial write in output log — `memmove` remaining data
+- **H2**: Non-ASCII bytes silently dropped — `unsigned char` cast + high-byte passthrough in VT100
+- **H3**: Command not JSON-escaped in responses — `append_json_escaped` used
+- **H4**: Response truncation produces invalid JSON — truncation check in `send_success`
+- **H5**: `handle_list_sessions` truncation → invalid JSON — rollback to last good position
+- **H6**: Undersized allocation in `handle_get_lines` — `content_len * 6`
+- **H7**: `\F13` produces "F3" (digit eaten) — save/restore position
+- **H8**: Session list accessed without lock — `mgr->lock` mutex
+- **H9**: `session_manager_destroy` doesn't stop multiplexer — `io_multiplexer_stop` + join
+- **H10**: TOCTOU race in `destroy_session` — atomic check-and-destroy under lock
+- **H11**: `FD_SET` overflow — `fd >= FD_SETSIZE` check
+- **H12**: `setenv()` not async-signal-safe — manual `environ` update
+- **H13**: `drop_privileges()` uses logging in child — `child_fatal()` instead
+- **H14**: `sysconf()` not async-signal-safe — compile-time constant
+- **H15**: `session_clear_raw_buffer` doesn't reset `raw_available` — reset to 0
+- **H16**: Data loss on `realloc` failure — return NULL on failure
+- **H17**: `pty_fd == -1` not handled — fail session creation
+- **H18**: Single `read()` truncates HTTP requests — read loop until `\r\n\r\n`
+- **H19**: `http_client.c` snprintf OOB write — bounds check after each `snprintf`
+- **H20**: `spawn_daemon` inherits stdin/stdout — close stdio before `exec`
+- **H21**: `expect_client_gone` fd reuse race — connection ID instead of raw fd
+- **H22**: `get_default_shell()` return not checked — NULL check + error
+
+### Fixed — Medium Severity Correctness & Robustness (45 bugs)
+
+- EINTR handling added to all read/write operations
+- Monotonic clocks (`clock_gettime`) in expect engine and timeout manager
+- SIGCHLD handler for zombie reaping
+- JSON parser: `\b`/`\f`/`\uXXXX` support, number validation, trailing garbage rejection
+- Dynamic buffers in `pshellctl`/`pshell_client` (no truncation)
+- HTTP error body surfacing for 4xx/5xx, chunked encoding rejection
+- TOCTOU fixes, partial write handling, deferred callback modifications
+- `tcgetattr` return value checked, `config_get_int` range validation
+- `session_is_alive` TOCTOU fixed with `waitpid(WNOHANG)`
+- Public session functions check `active` flag
+- `pty_write` handles partial writes, `process_wait` handles EINTR
+- `file_map_count` capped, `session_read_line_range` iterates all entries
+
+### Fixed — Low Severity & Code Quality (19 bugs)
+
+- Dead code/state removal (`connections[]` array, buffer, expect_ctx)
+- `send_error` JSON escaping, zero-length response handling
+- `json_stringify` proper escaping
+- `gethostbyname` → `getaddrinfo`, case-insensitive Content-Length
+- Debug fprintfs removed, `expect_any` exponential backoff
+- PID file write checked, `\0` escape doc warning
+
+### Documentation
+
+- Wiki: "15 routes" (was 14)
+- `ESCAPE_SEQUENCES.md`: `\0` truncates string warning
+- `README.md`: Last Updated date aligned with CHANGELOG (2026-10-10)
+- Removed undeclared `session_manager_cleanup` from header
+
+### Changed
+
+- Version bumped to 1.2.0 (MINOR per SemVer: backward-compatible bug fixes)
+
 ## [1.1.0] - 2026-10-10
 
 ### Added

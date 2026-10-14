@@ -19,6 +19,17 @@ struct io_multiplexer {
     int count;
     bool running;
     int max_fd;
+    
+    /* Deferred handler removals/additions during callback dispatch */
+    struct {
+        int remove_fds[MAX_FDS];
+        int remove_count;
+        int add_fd;
+        io_event_type_t add_events;
+        io_callback_t add_callback;
+        void *add_user_data;
+        bool add_pending;
+    } deferred;
 };
 
 io_multiplexer_t* io_multiplexer_create(void) {
@@ -31,6 +42,8 @@ io_multiplexer_t* io_multiplexer_create(void) {
     mux->count = 0;
     mux->running = false;
     mux->max_fd = -1;
+    mux->deferred.remove_count = 0;
+    mux->deferred.add_pending = false;
     
     for (int i = 0; i < MAX_FDS; i++) {
         mux->handlers[i].fd = -1;
@@ -50,8 +63,8 @@ void io_multiplexer_destroy(io_multiplexer_t *mux) {
 
 bool io_multiplexer_add(io_multiplexer_t *mux, int fd, io_event_type_t events,
                         io_callback_t callback, void *user_data) {
-    if (!mux || fd < 0 || !callback) {
-        log_error("Invalid arguments to io_multiplexer_add");
+    if (!mux || fd < 0 || fd >= FD_SETSIZE || !callback) {
+        log_error("Invalid arguments to io_multiplexer_add (fd=%d)", fd);
         return false;
     }
     
@@ -90,16 +103,14 @@ bool io_multiplexer_add(io_multiplexer_t *mux, int fd, io_event_type_t events,
     return false;
 }
 
-bool io_multiplexer_remove(io_multiplexer_t *mux, int fd) {
-    if (!mux || fd < 0) return false;
-    
+/* Internal: immediate removal (not from callback) */
+static bool io_multiplexer_remove_immediate(io_multiplexer_t *mux, int fd) {
     for (int i = 0; i < MAX_FDS; i++) {
         if (mux->handlers[i].active && mux->handlers[i].fd == fd) {
             mux->handlers[i].active = false;
             mux->handlers[i].fd = -1;
             mux->count--;
             
-            // Update max_fd if needed
             if (fd == mux->max_fd) {
                 mux->max_fd = -1;
                 for (int j = 0; j < MAX_FDS; j++) {
@@ -115,6 +126,39 @@ bool io_multiplexer_remove(io_multiplexer_t *mux, int fd) {
     }
     
     return false;
+}
+
+/* Public: removal with deferred support for callback safety */
+bool io_multiplexer_remove(io_multiplexer_t *mux, int fd) {
+    if (!mux || fd < 0) return false;
+    
+    /* If called from callback context (mux->running), defer the removal */
+    if (mux->running && mux->deferred.remove_count < MAX_FDS) {
+        mux->deferred.remove_fds[mux->deferred.remove_count++] = fd;
+        log_debug("Deferred removal of FD %d", fd);
+        return true;
+    }
+    
+    return io_multiplexer_remove_immediate(mux, fd);
+}
+
+/* Process deferred removals after callback dispatch */
+static void io_multiplexer_process_deferred(io_multiplexer_t *mux) {
+    for (int i = 0; i < mux->deferred.remove_count; i++) {
+        int fd = mux->deferred.remove_fds[i];
+        io_multiplexer_remove_immediate(mux, fd);
+    }
+    mux->deferred.remove_count = 0;
+    
+    if (mux->deferred.add_pending) {
+        int fd = mux->deferred.add_fd;
+        io_event_type_t events = mux->deferred.add_events;
+        io_callback_t callback = mux->deferred.add_callback;
+        void *user_data = mux->deferred.add_user_data;
+        
+        io_multiplexer_add(mux, fd, events, callback, user_data);
+        mux->deferred.add_pending = false;
+    }
 }
 
 bool io_multiplexer_modify(io_multiplexer_t *mux, int fd, io_event_type_t events) {
@@ -149,15 +193,17 @@ int io_multiplexer_run(io_multiplexer_t *mux, int timeout_ms) {
         if (!mux->handlers[i].active) continue;
         
         int fd = mux->handlers[i].fd;
-        
+
+        if (fd < 0 || fd >= FD_SETSIZE) continue;
+
         if (mux->handlers[i].events & IO_EVENT_READ) {
             FD_SET(fd, &read_fds);
         }
-        
+
         if (mux->handlers[i].events & IO_EVENT_WRITE) {
             FD_SET(fd, &write_fds);
         }
-        
+
         FD_SET(fd, &error_fds);
     }
     
@@ -186,6 +232,9 @@ int io_multiplexer_run(io_multiplexer_t *mux, int timeout_ms) {
         return 0;  // Timeout
     }
     
+    /* Mark as running to enable deferred operations */
+    mux->running = true;
+    
     // Process events
     int events_processed = 0;
     
@@ -212,6 +261,11 @@ int io_multiplexer_run(io_multiplexer_t *mux, int timeout_ms) {
             events_processed++;
         }
     }
+    
+    mux->running = false;
+    
+    /* Process deferred removals/additions after callbacks */
+    io_multiplexer_process_deferred(mux);
     
     return events_processed;
 }

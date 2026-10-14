@@ -5,6 +5,8 @@
 #include <strings.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 
 #define MAX_LINE_LENGTH 1024
 #define MAX_ENTRIES 256
@@ -141,11 +143,13 @@ int config_get_int(const config_t *cfg, const char *section,
     if (!value) return default_value;
     
     char *endptr;
+    errno = 0;
     /* Auto-detect base: 0 = auto (0x for hex, 0 for octal, else decimal) */
     long result = strtol(value, &endptr, 0);
-    
-    if (*endptr != '\0') return default_value;
-    
+
+    if (errno == ERANGE || *endptr != '\0') return default_value;
+    if (result < INT_MIN || result > INT_MAX) return default_value;
+
     return (int)result;
 }
 

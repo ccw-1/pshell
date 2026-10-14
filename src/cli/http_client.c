@@ -18,24 +18,50 @@ static int connect_to_server(const char *host, int port) {
         return -1;
     }
 
-    struct hostent *server = gethostbyname(host);
-    if (!server) {
+    struct addrinfo hints, *res, *rp;
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    int err = getaddrinfo(host, port_str, &hints, &res);
+    if (err != 0) {
         close(sock_fd);
         return -1;
     }
 
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    memcpy(&server_addr.sin_addr.s_addr, server->h_addr_list[0], server->h_length);
-    server_addr.sin_port = htons(port);
-
-    if (connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    int connected = 0;
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        sock_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sock_fd < 0) continue;
+        if (connect(sock_fd, rp->ai_addr, rp->ai_addrlen) == 0) {
+            connected = 1;
+            break;
+        }
         close(sock_fd);
+    }
+
+    freeaddrinfo(res);
+
+    if (!connected) {
         return -1;
     }
 
     return sock_fd;
+}
+
+/* Case-insensitive strstr */
+static char* strcasestr_local(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return NULL;
+    size_t needle_len = strlen(needle);
+    for (const char *p = haystack; *p; p++) {
+        if (strncasecmp(p, needle, needle_len) == 0) {
+            return (char*)p;
+        }
+    }
+    return NULL;
 }
 
 static http_response_t *make_request(const char *host, int port, const char *method,
@@ -59,23 +85,54 @@ static http_response_t *make_request(const char *host, int port, const char *met
                       "Host: %s:%d\r\n"
                       "Connection: close\r\n",
                       method, path, host, port);
+    if (len < 0 || (size_t)len >= sizeof(request)) {
+        response->error = strdup("Failed to build request");
+        close(sock_fd);
+        return response;
+    }
 
     if (api_key) {
-        len += snprintf(request + len, sizeof(request) - len,
-                       "Authorization: Bearer %s\r\n", api_key);
+        int n = snprintf(request + len, sizeof(request) - len,
+                         "Authorization: Bearer %s\r\n", api_key);
+        if (n < 0 || (size_t)n >= sizeof(request) - len) {
+            response->error = strdup("Failed to build request");
+            close(sock_fd);
+            return response;
+        }
+        len += n;
     }
 
     if (body) {
-        len += snprintf(request + len, sizeof(request) - len,
-                       "Content-Type: application/json\r\n"
-                       "Content-Length: %zu\r\n",
-                       strlen(body));
+        int n = snprintf(request + len, sizeof(request) - len,
+                         "Content-Type: application/json\r\n"
+                         "Content-Length: %zu\r\n",
+                         strlen(body));
+        if (n < 0 || (size_t)n >= sizeof(request) - len) {
+            response->error = strdup("Failed to build request");
+            close(sock_fd);
+            return response;
+        }
+        len += n;
     }
 
-    len += snprintf(request + len, sizeof(request) - len, "\r\n");
+    {
+        int n = snprintf(request + len, sizeof(request) - len, "\r\n");
+        if (n < 0 || (size_t)n >= sizeof(request) - len) {
+            response->error = strdup("Failed to build request");
+            close(sock_fd);
+            return response;
+        }
+        len += n;
+    }
 
     if (body) {
-        len += snprintf(request + len, sizeof(request) - len, "%s", body);
+        int n = snprintf(request + len, sizeof(request) - len, "%s", body);
+        if (n < 0 || (size_t)n >= sizeof(request) - len) {
+            response->error = strdup("Failed to build request");
+            close(sock_fd);
+            return response;
+        }
+        len += n;
     }
 
     /* Send request */
@@ -142,12 +199,20 @@ static http_response_t *make_request(const char *host, int port, const char *met
         response->status_code = atoi(space + 1);
     }
 
-    /* Check for Content-Length header */
+    /* Check for Content-Length header (case-insensitive) */
     *header_end = '\0';  /* Temporarily null-terminate headers */
-    char *content_length_header = strstr(buffer, "Content-Length:");
+    char *content_length_header = strcasestr_local(buffer, "Content-Length:");
     size_t expected_body_len = 0;
     if (content_length_header) {
         expected_body_len = atoi(content_length_header + 15);
+    }
+
+    /* Check for chunked encoding (case-insensitive) */
+    char *transfer_encoding = strcasestr_local(buffer, "Transfer-Encoding:");
+    if (transfer_encoding && strcasestr_local(transfer_encoding, "chunked")) {
+        *header_end = '\r';  /* Restore */
+        response->error = strdup("Chunked encoding not supported");
+        return response;
     }
     *header_end = '\r';  /* Restore */
 
@@ -166,6 +231,17 @@ static http_response_t *make_request(const char *host, int port, const char *met
             memcpy(response->body, body_start, body_len);
             response->body[body_len] = '\0';
             response->body_size = body_len;
+        }
+    }
+
+    /* Surface HTTP error bodies (4xx/5xx) as error message */
+    if (response->status_code < 200 || response->status_code >= 300) {
+        if (response->body && response->body_size > 0) {
+            response->error = strdup(response->body);
+        } else {
+            char err_msg[64];
+            snprintf(err_msg, sizeof(err_msg), "HTTP %d", response->status_code);
+            response->error = strdup(err_msg);
         }
     }
 

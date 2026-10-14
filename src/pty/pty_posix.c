@@ -116,7 +116,11 @@ pty_t* pty_create(int rows, int cols) {
     }
     
     // Save original terminal settings
-    tcgetattr(pty->master_fd, &pty->orig_termios);
+    if (tcgetattr(pty->master_fd, &pty->orig_termios) < 0) {
+        log_warn("tcgetattr failed on master fd %d: %s", pty->master_fd, strerror(errno));
+        /* Continue - pty_restore_mode will be a no-op if orig_termios is zeroed */
+        memset(&pty->orig_termios, 0, sizeof(pty->orig_termios));
+    }
     
     log_debug("Created PTY: master_fd=%d, slave=%s, size=%dx%d",
               pty->master_fd, pty->slave_name, rows, cols);
@@ -220,13 +224,21 @@ ssize_t pty_read(pty_t *pty, void *buf, size_t size) {
 
 ssize_t pty_write(pty_t *pty, const void *buf, size_t size) {
     if (!pty || pty->master_fd < 0 || !buf) return -1;
-    
-    ssize_t n = write(pty->master_fd, buf, size);
-    if (n < 0) {
-        log_error("PTY write error: %s", strerror(errno));
+
+    /* Handle partial writes */
+    size_t total = 0;
+    const char *p = (const char *)buf;
+    while (total < size) {
+        ssize_t n = write(pty->master_fd, p + total, size - total);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            log_error("PTY write error: %s", strerror(errno));
+            return -1;
+        }
+        total += (size_t)n;
     }
-    
-    return n;
+
+    return (ssize_t)total;
 }
 
 bool pty_has_data(pty_t *pty, int timeout_ms) {

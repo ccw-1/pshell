@@ -2,7 +2,7 @@
 #define PSHELL_TIMEOUT_MANAGER_H
 
 #include <stdbool.h>
-#include <sys/time.h>
+#include <time.h>
 
 /**
  * Timeout Manager - Timeout tracking and calculation
@@ -13,7 +13,7 @@
 /* Timeout context */
 typedef struct {
     int timeout_ms;             /* Total timeout in milliseconds */
-    struct timeval start_time;  /* Start time */
+    struct timespec start_time; /* Start time (monotonic clock) */
     bool has_timeout;           /* Whether timeout is set */
 } timeout_ctx_t;
 
@@ -39,12 +39,12 @@ bool timeout_expired(const timeout_ctx_t *ctx);
 int timeout_remaining(const timeout_ctx_t *ctx);
 
 /**
- * Get remaining timeout as timeval
+ * Get remaining timeout as timespec
  * @param ctx Timeout context
- * @param tv Output timeval
+ * @param ts Output timespec
  * @return true if timeout is set, false if no timeout
  */
-bool timeout_to_timeval(const timeout_ctx_t *ctx, struct timeval *tv);
+bool timeout_to_timeval(const timeout_ctx_t *ctx, struct timespec *ts);
 
 /**
  * Get elapsed time

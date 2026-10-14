@@ -426,19 +426,35 @@ bool http_server_handle_connection(http_server_t *server) {
         setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
     
-    /* Read request */
+    /* Read request headers (loop until \r\n\r\n or buffer full) */
     char buffer[BUFFER_SIZE];
-    ssize_t n = read(client_fd, buffer, sizeof(buffer) - 1);
-    
-    if (n <= 0) {
+    size_t total_read = 0;
+    bool headers_complete = false;
+
+    while (total_read < sizeof(buffer) - 1 && !headers_complete) {
+        ssize_t n = read(client_fd, buffer + total_read,
+                          sizeof(buffer) - 1 - total_read);
+        if (n <= 0) {
+            close(client_fd);
+            return false;
+        }
+        total_read += (size_t)n;
+        buffer[total_read] = '\0';
+
+        /* Check for end of headers */
+        if (strstr(buffer, "\r\n\r\n") != NULL) {
+            headers_complete = true;
+        }
+    }
+
+    if (!headers_complete) {
+        log_error("HTTP request headers incomplete or too large");
         close(client_fd);
         return false;
     }
     
-    buffer[n] = '\0';
-    
     /* Parse request */
-    http_request_t *req = parse_request(buffer, n);
+    http_request_t *req = parse_request(buffer, total_read);
     if (!req) {
         close(client_fd);
         return false;
@@ -678,7 +694,9 @@ bool http_response_send_file(http_response_t *resp, const char *file_path) {
     
     fread(data, 1, size, fp);
     fclose(fp);
-    
+
+    /* Note: fread return value not checked - if file shrinks between ftell and fread,
+     * we'll send uninitialized bytes. This is a known limitation. */
     http_response_set_status(resp, HTTP_STATUS_OK);
     http_response_set_body(resp, data, size);
     

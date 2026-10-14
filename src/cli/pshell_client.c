@@ -5,9 +5,24 @@
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <errno.h>
+#include <limits.h>
 
 #define DEFAULT_HOST "127.0.0.1"
 #define DEFAULT_PORT 8080
+
+/* Safe atoi replacement */
+static int safe_atoi(const char *str, int *out) {
+    if (!str) return 0;
+    errno = 0;
+    char *endptr;
+    long val = strtol(str, &endptr, 10);
+    if (errno == ERANGE || *endptr != '\0' || val < INT_MIN || val > INT_MAX) {
+        return 0;
+    }
+    *out = (int)val;
+    return 1;
+}
 
 /* Global options */
 static char *g_host = NULL;
@@ -75,17 +90,33 @@ static int cmd_create(int argc, char **argv) {
         if (strcmp(argv[i], "--command") == 0 && i + 1 < argc) {
             command = argv[++i];
         } else if (strcmp(argv[i], "--rows") == 0 && i + 1 < argc) {
-            rows = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &rows) || rows <= 0) {
+                fprintf(stderr, "Invalid --rows value\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--cols") == 0 && i + 1 < argc) {
-            cols = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &cols) || cols <= 0) {
+                fprintf(stderr, "Invalid --cols value\n");
+                return 1;
+            }
         }
     }
 
-    /* Build JSON request */
-    char body[512];
-    snprintf(body, sizeof(body),
-             "{\"command\":\"%s\",\"rows\":%d,\"cols\":%d}",
-             command, rows, cols);
+    /* Build JSON request with dynamic buffer to avoid truncation */
+    size_t body_size = 256 + (command ? strlen(command) : 0);
+    char *body = malloc(body_size);
+    if (!body) {
+        fprintf(stderr, "Failed to allocate request body\n");
+        return 1;
+    }
+    int n = snprintf(body, body_size,
+                     "{\"command\":\"%s\",\"rows\":%d,\"cols\":%d}",
+                     command, rows, cols);
+    if (n < 0 || (size_t)n >= body_size) {
+        fprintf(stderr, "Failed to build request body\n");
+        free(body);
+        return 1;
+    }
 
     /* Make request */
     http_response_t *resp = http_client_post(g_host, g_port, "/api/sessions", body, g_api_key);
@@ -284,10 +315,17 @@ static int cmd_resize(int argc, char **argv) {
     while ((opt = getopt_long(argc, argv, "r:c:", long_options, NULL)) != -1) {
         switch (opt) {
             case 'r':
-                rows = atoi(optarg);
+                if (!safe_atoi(optarg, &rows) || rows <= 0) {
+                    fprintf(stderr, "Invalid --rows value\n");
+                    return 1;
+                }
                 break;
             case 'c':
-                cols = atoi(optarg);
+                if (!safe_atoi(optarg, &cols) || cols <= 0) {
+                    fprintf(stderr, "Invalid --cols value\n");
+                    return 1;
+                }
+                break;
                 break;
         }
     }
@@ -347,7 +385,10 @@ static int cmd_expect(int argc, char **argv) {
                 pattern = optarg;
                 break;
             case 't':
-                timeout = atoi(optarg);
+                if (!safe_atoi(optarg, &timeout) || timeout <= 0) {
+                    fprintf(stderr, "Invalid --timeout value\n");
+                    return 1;
+                }
                 break;
             case 's':
                 case_sensitive = 1;
@@ -479,7 +520,10 @@ int main(int argc, char **argv) {
                 g_host = optarg;
                 break;
             case 'p':
-                g_port = atoi(optarg);
+                if (!safe_atoi(optarg, &g_port) || g_port <= 0 || g_port > 65535) {
+                    fprintf(stderr, "Invalid --port value (1-65535)\n");
+                    return 1;
+                }
                 break;
             case 'k':
                 g_api_key = optarg;

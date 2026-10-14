@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -85,6 +86,16 @@ static void signal_handler(int sig) {
     }
 }
 
+/* SIGCHLD handler: reap zombie children (async-signal-safe) */
+static void sigchld_handler(int sig) {
+    (void)sig;
+    int saved_errno = errno;
+    while (waitpid(-1, NULL, WNOHANG) > 0) {
+        /* Reap all available zombies */
+    }
+    errno = saved_errno;
+}
+
 /* Setup signal handlers */
 static bool setup_signals(void) {
     struct sigaction sa;
@@ -92,17 +103,28 @@ static bool setup_signals(void) {
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
-    
+
     if (sigaction(SIGTERM, &sa, NULL) < 0 ||
         sigaction(SIGINT, &sa, NULL) < 0 ||
         sigaction(SIGHUP, &sa, NULL) < 0) {
         fprintf(stderr, "Failed to setup signal handlers: %s\n", strerror(errno));
         return false;
     }
-    
+
+    /* Install SIGCHLD handler for zombie reaping */
+    struct sigaction sa_chld;
+    memset(&sa_chld, 0, sizeof(sa_chld));
+    sa_chld.sa_handler = sigchld_handler;
+    sigemptyset(&sa_chld.sa_mask);
+    sa_chld.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa_chld, NULL) < 0) {
+        fprintf(stderr, "Failed to setup SIGCHLD handler: %s\n", strerror(errno));
+        return false;
+    }
+
     // Ignore SIGPIPE
     signal(SIGPIPE, SIG_IGN);
-    
+
     return true;
 }
 
@@ -168,12 +190,17 @@ static bool daemonize(void) {
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
-    
-    // Reopen to /dev/null
-    open("/dev/null", O_RDONLY);  // stdin
-    open("/dev/null", O_WRONLY);  // stdout
-    open("/dev/null", O_WRONLY);  // stderr
-    
+
+    // Reopen to /dev/null (with proper error handling)
+    int fd = open("/dev/null", O_RDWR);
+    if (fd < 0) {
+        return false;
+    }
+    dup2(fd, STDIN_FILENO);
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    if (fd > STDERR_FILENO) close(fd);
+
     return true;
 }
 

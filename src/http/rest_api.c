@@ -712,7 +712,7 @@ static void handle_get_output(http_request_t *req, http_response_t *resp, void *
     /* Escape output for JSON */
     char escaped[8192];
     size_t j = 0;
-    for (ssize_t i = 0; i < n && j < sizeof(escaped) - 2; i++) {
+    for (ssize_t i = 0; i < n && j < sizeof(escaped) - 7; i++) {
         switch (buffer[i]) {
             case '"':  escaped[j++] = '\\'; escaped[j++] = '"'; break;
             case '\\': escaped[j++] = '\\'; escaped[j++] = '\\'; break;
@@ -723,7 +723,7 @@ static void handle_get_output(http_request_t *req, http_response_t *resp, void *
             case '\f': escaped[j++] = '\\'; escaped[j++] = 'f'; break;
             default:
                 if ((unsigned char)buffer[i] < 32) {
-                    /* Control character - skip or escape as unicode */
+                    /* Control character - escape as unicode */
                     j += snprintf(escaped + j, sizeof(escaped) - j, "\\u%04x", (unsigned char)buffer[i]);
                 } else {
                     escaped[j++] = buffer[i];
@@ -732,7 +732,7 @@ static void handle_get_output(http_request_t *req, http_response_t *resp, void *
         }
     }
     escaped[j] = '\0';
-    
+
     /* Build JSON response */
     char response[16384];
     int len = snprintf(response, sizeof(response),
@@ -807,7 +807,7 @@ static void handle_get_screen(http_request_t *req, http_response_t *resp, void *
     /* Escape screen text for JSON */
     char escaped[16384];
     size_t j = 0;
-    for (size_t i = 0; i < text_len && j < sizeof(escaped) - 2; i++) {
+    for (size_t i = 0; i < text_len && j < sizeof(escaped) - 7; i++) {
         switch (screen_text[i]) {
             case '"':  escaped[j++] = '\\'; escaped[j++] = '"'; break;
             case '\\': escaped[j++] = '\\'; escaped[j++] = '\\'; break;

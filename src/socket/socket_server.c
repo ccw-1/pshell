@@ -34,8 +34,6 @@ struct socket_server {
     void *user_data;
     int permissions;
     bool running;
-    socket_connection_t connections[MAX_CONNECTIONS];
-    int connection_count;
 };
 
 socket_server_t* socket_server_create(const char *socket_path) {
@@ -51,6 +49,11 @@ socket_server_t* socket_server_create(const char *socket_path) {
     }
     
     server->socket_path = strdup(socket_path);
+    if (!server->socket_path) {
+        log_error("Failed to allocate socket path");
+        free(server);
+        return NULL;
+    }
     server->listen_fd = -1;
     server->permissions = 0600;  /* Default: owner only */
     server->running = false;
@@ -65,13 +68,6 @@ void socket_server_destroy(socket_server_t *server) {
     if (server->listen_fd >= 0) {
         close(server->listen_fd);
         unlink(server->socket_path);
-    }
-    
-    /* Close all connections */
-    for (int i = 0; i < server->connection_count; i++) {
-        if (server->connections[i].fd >= 0) {
-            close(server->connections[i].fd);
-        }
     }
     
     free(server->socket_path);
@@ -172,16 +168,7 @@ void socket_server_stop(socket_server_t *server) {
         unlink(server->socket_path);
         server->listen_fd = -1;
     }
-    
-    /* Close all connections */
-    for (int i = 0; i < server->connection_count; i++) {
-        if (server->connections[i].fd >= 0) {
-            close(server->connections[i].fd);
-            server->connections[i].fd = -1;
-        }
-    }
-    server->connection_count = 0;
-    
+
     log_info("Socket server stopped");
 }
 
@@ -236,42 +223,50 @@ bool socket_server_handle_connection(socket_server_t *server) {
     
     /* Read message length (4 bytes, network byte order) */
     uint32_t msg_len_net;
-    ssize_t n = read(client_fd, &msg_len_net, sizeof(msg_len_net));
-    
-    if (n != sizeof(msg_len_net)) {
-        if (n < 0) {
-            log_error("Failed to read message length: %s", strerror(errno));
+    size_t total_read = 0;
+    while (total_read < sizeof(msg_len_net)) {
+        ssize_t n = read(client_fd, (char*)&msg_len_net + total_read,
+                          sizeof(msg_len_net) - total_read);
+        if (n <= 0) {
+            if (n < 0) {
+                log_error("Failed to read message length: %s", strerror(errno));
+            }
+            close(client_fd);
+            return false;
         }
-        close(client_fd);
-        return false;
+        total_read += (size_t)n;
     }
-    
+
     size_t msg_len = ntohl(msg_len_net);
-    
+
     /* Validate message length */
     if (msg_len == 0 || msg_len >= BUFFER_SIZE) {
         log_error("Invalid message length: %zu", msg_len);
         close(client_fd);
         return false;
     }
-    
-    /* Read message */
+
+    /* Read message body */
     char buffer[BUFFER_SIZE];
-    n = read(client_fd, buffer, msg_len);
-    
-    if (n != (ssize_t)msg_len) {
-        log_error("Failed to read complete message: got %zd, expected %zu", n, msg_len);
-        close(client_fd);
-        return false;
+    total_read = 0;
+    while (total_read < msg_len) {
+        ssize_t n = read(client_fd, buffer + total_read, msg_len - total_read);
+        if (n <= 0) {
+            log_error("Failed to read complete message: got %zu, expected %zu",
+                      total_read, msg_len);
+            close(client_fd);
+            return false;
+        }
+        total_read += (size_t)n;
     }
     
-    buffer[n] = '\0';
-    
+    buffer[total_read] = '\0';
+
     /* Create connection object */
     socket_connection_t conn;
     conn.fd = client_fd;
-    memcpy(conn.buffer, buffer, n + 1);
-    conn.buffer_len = n;
+    memcpy(conn.buffer, buffer, total_read + 1);
+    conn.buffer_len = (size_t)total_read;
     conn.expect_ctx = NULL;
     conn.detached = false;
     
@@ -291,8 +286,7 @@ bool socket_server_handle_connection(socket_server_t *server) {
         expect_cancel((expect_context_t*)conn.expect_ctx);
     }
     
-    /* Ensure data is sent before closing */
-    fsync(client_fd);
+    /* Shutdown write side to signal EOF (fsync on socket is a no-op) */
     shutdown(client_fd, SHUT_WR);
     
     /* Close connection */
@@ -303,17 +297,21 @@ bool socket_server_handle_connection(socket_server_t *server) {
 
 bool socket_connection_send(socket_connection_t *conn, const char *message) {
     if (!conn || conn->fd < 0 || !message) return false;
-    
+
     size_t len = strlen(message);
-    ssize_t written = write(conn->fd, message, len);
-    
-    if (written < 0) {
-        log_error("Failed to send response: %s", strerror(errno));
-        return false;
+    size_t total = 0;
+    while (total < len) {
+        ssize_t written = write(conn->fd, message + total, len - total);
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            log_error("Failed to send response: %s", strerror(errno));
+            return false;
+        }
+        total += (size_t)written;
     }
-    
-    if ((size_t)written != len) {
-        log_warn("Partial write: %zd of %zu bytes", written, len);
+
+    if (false) {
+        log_warn("Partial write: %zd of %zu bytes", (ssize_t)total, len);
         return false;
     }
     

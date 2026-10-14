@@ -268,6 +268,7 @@ size_t str_unescape(char *dst, size_t dst_cap, const char *src) {
                 /* Function keys: \F1 through \F12 */
                 case 'F':
                     src++;
+                    const char *save = src;  /* Save position for error recovery */
                     if (*src >= '1' && *src <= '9') {
                         int fkey = *src - '0';
                         src++;
@@ -295,9 +296,9 @@ size_t str_unescape(char *dst, size_t dst_cap, const char *src) {
                                 while (*s) { PUTC(*s); s++; }
                             }
                         } else {
-                            /* Invalid function key number */
+                            /* Invalid function key number - restore to first digit */
                             PUTC('F');
-                            src -= (fkey >= 10) ? 1 : 0;
+                            src = save;
                         }
                     } else {
                         /* Not a function key, copy literal */

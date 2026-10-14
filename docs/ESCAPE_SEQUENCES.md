@@ -15,7 +15,7 @@ pshell's `send` command supports comprehensive escape sequence processing, allow
 | `\t` | Horizontal Tab | 9 (0x09) |
 | `\e` | Escape key | 27 (0x1B) |
 | `\\` | Literal backslash | 92 (0x5C) |
-| `\0` | Null character | 0 (0x00) |
+| `\0` | Null character (embedded NUL truncates string) | 0 (0x00) |
 | `\a` | Alert (Bell) | 7 (0x07) |
 | `\b` | Backspace | 8 (0x08) |
 | `\f` | Form Feed | 12 (0x0C) |

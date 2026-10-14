@@ -59,6 +59,9 @@ struct session {
      * via the PTY callback) and expect worker threads (readers) */
     pthread_mutex_t expect_lock;
     
+    /* Back-reference to I/O multiplexer (for FD removal on EOF) */
+    io_multiplexer_t *mux;
+    
     /* Output logging */
     char output_file[512];
     int output_fd;
@@ -87,6 +90,7 @@ struct session_manager {
     int max_sessions;
     int session_count;
     io_multiplexer_t *mux;  /* I/O multiplexer for monitoring PTY FDs */
+    pthread_mutex_t lock;   /* Protects session list mutations and lookups */
 };
 
 session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mux) {
@@ -109,6 +113,7 @@ session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mu
     mgr->max_sessions = max_sessions;
     mgr->session_count = 0;
     mgr->mux = mux;
+    pthread_mutex_init(&mgr->lock, NULL);
     
     /* Initialize all sessions as inactive */
     for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -194,10 +199,16 @@ static void session_kill_and_reap(session_t *session) {
 
 void session_manager_destroy(session_manager_t *mgr) {
     if (!mgr) return;
-    
+
+    /* Stop the multiplexer thread first to prevent use-after-free */
+    if (mgr->mux) {
+        io_multiplexer_stop(mgr->mux);
+    }
+
     /* Stop and reap every active session's process group FIRST, so expect
      * worker threads blocked on a PTY hit EOF and release the session
      * before we free its buffers. */
+    pthread_mutex_lock(&mgr->lock);
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (mgr->sessions[i].active) {
             session_kill_and_reap(&mgr->sessions[i]);
@@ -215,12 +226,14 @@ void session_manager_destroy(session_manager_t *mgr) {
             mgr->sessions[i].active = false;
         }
     }
-    
+    pthread_mutex_unlock(&mgr->lock);
+
     /* Destroy mutexes only after all sessions are quiesced */
     for (int i = 0; i < MAX_SESSIONS; i++) {
         pthread_mutex_destroy(&mgr->sessions[i].expect_lock);
     }
-    
+    pthread_mutex_destroy(&mgr->lock);
+
     free(mgr);
     log_info("Destroyed session manager");
 }
@@ -239,6 +252,9 @@ static void session_rotate_output_files(session_t *session) {
     /* Update file map for current file before rotation */
     if (session->current_line_count > 0) {
         int idx = session->file_map_count % MAX_ROTATE_FILES;
+        if (session->file_map_count < MAX_ROTATE_FILES) {
+            session->file_map_count++;
+        }
         session->file_map[idx].start_line = session->total_lines_written - session->current_line_count + 1;
         session->file_map[idx].end_line = session->total_lines_written;
         snprintf(session->file_map[idx].filename, sizeof(session->file_map[idx].filename),
@@ -335,8 +351,15 @@ static void session_write_output_log(session_t *session, const char *data, size_
                         ssize_t written = write(session->output_fd, session->output_buffer, session->output_buffer_used);
                         if (written < 0) {
                             log_error("Failed to write to output file: %s", strerror(errno));
+                        } else if ((size_t)written < session->output_buffer_used) {
+                            /* Partial write: shift remaining data to front */
+                            memmove(session->output_buffer,
+                                    session->output_buffer + written,
+                                    session->output_buffer_used - (size_t)written);
+                            session->output_buffer_used -= (size_t)written;
+                        } else {
+                            session->output_buffer_used = 0;
                         }
-                        session->output_buffer_used = 0;
                     }
                     
                     /* Rotate files */
@@ -350,8 +373,15 @@ static void session_write_output_log(session_t *session, const char *data, size_
             ssize_t written = write(session->output_fd, session->output_buffer, session->output_buffer_used);
             if (written < 0) {
                 log_error("Failed to write to output file: %s", strerror(errno));
+            } else if ((size_t)written < session->output_buffer_used) {
+                /* Partial write: shift remaining data to front */
+                memmove(session->output_buffer,
+                        session->output_buffer + written,
+                        session->output_buffer_used - (size_t)written);
+                session->output_buffer_used -= (size_t)written;
+            } else {
+                session->output_buffer_used = 0;
             }
-            session->output_buffer_used = 0;
         }
     }
 }
@@ -361,9 +391,18 @@ static void session_flush_output_log(session_t *session) {
         return;
     }
     
-    ssize_t written = write(session->output_fd, session->output_buffer, session->output_buffer_used);
-    if (written < 0) {
-        log_error("Failed to flush output file: %s", strerror(errno));
+    /* Flush with retry on partial writes */
+    size_t remaining = session->output_buffer_used;
+    size_t offset = 0;
+    while (remaining > 0) {
+        ssize_t written = write(session->output_fd,
+                                session->output_buffer + offset, remaining);
+        if (written < 0) {
+            log_error("Failed to flush output file: %s", strerror(errno));
+            break;
+        }
+        offset += (size_t)written;
+        remaining -= (size_t)written;
     }
     session->output_buffer_used = 0;
 }
@@ -480,6 +519,13 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
             /* EOF - process has exited */
             log_info("PTY EOF for session %s - process exited", session->id);
             session->state = SESSION_STATE_DEAD;
+            /* Remove PTY FD from multiplexer to prevent spin */
+            if (session->pty) {
+                int pty_fd = pty_get_master_fd(session->pty);
+                if (pty_fd >= 0 && session->mux) {
+                    io_multiplexer_remove(session->mux, pty_fd);
+                }
+            }
         } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             log_debug("PTY read error for session %s: %s", session->id, strerror(errno));
         }
@@ -570,6 +616,9 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
         session->pty = NULL;
         return NULL;
     }
+
+    /* Store multiplexer reference for EOF handling */
+    session->mux = mgr->mux;
     
     /* Set child PID in PTY */
     pty_set_child_pid(session->pty, session->pid);
@@ -636,24 +685,31 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     
     /* Add PTY master FD to multiplexer for monitoring */
     int pty_fd = pty_get_master_fd(session->pty);
-    if (pty_fd >= 0 && mgr->mux) {
-        if (!io_multiplexer_add(mgr->mux, pty_fd, IO_EVENT_READ, session_pty_callback, session)) {
-            log_error("Failed to add PTY FD to multiplexer");
-            /* session->active was set above: clear it so the slot does not
-             * look occupied, and free everything allocated for this create
-             * (raw_buffer was already allocated at this point). */
-            session->active = false;
-            screen_buffer_destroy(session->screen);
-            free(session->raw_buffer);
-            session->raw_buffer = NULL;
-            reap_child_blocking(session->pid);
-            pty_destroy(session->pty);
-            session->pty = NULL;
-            session->screen = NULL;
-            return NULL;
-        }
-        log_debug("Added PTY FD %d to multiplexer for session %s", pty_fd, session->id);
+    if (pty_fd < 0) {
+        log_error("Failed to get PTY master fd for session %s", session->id);
+        session->active = false;
+        screen_buffer_destroy(session->screen);
+        free(session->raw_buffer);
+        session->raw_buffer = NULL;
+        reap_child_blocking(session->pid);
+        pty_destroy(session->pty);
+        session->pty = NULL;
+        session->screen = NULL;
+        return NULL;
     }
+    if (!io_multiplexer_add(mgr->mux, pty_fd, IO_EVENT_READ, session_pty_callback, session)) {
+        log_error("Failed to add PTY FD to multiplexer");
+        session->active = false;
+        screen_buffer_destroy(session->screen);
+        free(session->raw_buffer);
+        session->raw_buffer = NULL;
+        reap_child_blocking(session->pid);
+        pty_destroy(session->pty);
+        session->pty = NULL;
+        session->screen = NULL;
+        return NULL;
+    }
+    log_debug("Added PTY FD %d to multiplexer for session %s", pty_fd, session->id);
     
     mgr->session_count++;
     
@@ -694,14 +750,16 @@ const char* session_manager_create_session(session_manager_t *mgr,
 
 session_t* session_manager_get(session_manager_t *mgr, const char *session_id) {
     if (!mgr || !session_id) return NULL;
-    
+
+    pthread_mutex_lock(&mgr->lock);
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (mgr->sessions[i].active &&
             strcmp(mgr->sessions[i].id, session_id) == 0) {
+            pthread_mutex_unlock(&mgr->lock);
             return &mgr->sessions[i];
         }
     }
-    
+    pthread_mutex_unlock(&mgr->lock);
     return NULL;
 }
 
@@ -716,7 +774,7 @@ static void reap_child_blocking(pid_t pid) {
         int status;
         pid_t result = waitpid(pid, &status, WNOHANG);
         if (result > 0 || (result < 0 && errno == ECHILD)) return;
-        usleep(100000);  /* 100ms */
+        usleep(10000);  /* 10ms - reduced from 100ms */
     }
     kill(pid, SIGKILL);
     while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
@@ -726,13 +784,22 @@ static void reap_child_blocking(pid_t pid) {
 
 bool session_manager_destroy_session(session_manager_t *mgr, const char *session_id) {
     if (!mgr || !session_id) return false;
-    
-    session_t *session = session_manager_get(mgr, session_id);
+
+    pthread_mutex_lock(&mgr->lock);
+    session_t *session = NULL;
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (mgr->sessions[i].active &&
+            strcmp(mgr->sessions[i].id, session_id) == 0) {
+            session = &mgr->sessions[i];
+            break;
+        }
+    }
     if (!session) {
+        pthread_mutex_unlock(&mgr->lock);
         log_error("Session not found: %s", session_id);
         return false;
     }
-    
+
     /* Refuse to destroy a session with an expect in flight: the expect
      * worker holds a pointer to this session, and the slot is immediately
      * reusable - destroying now would free memory under the worker and
@@ -740,14 +807,18 @@ bool session_manager_destroy_session(session_manager_t *mgr, const char *session
      * (REST/socket destroy handlers, dead-session cleanup) surface this
      * as a destroy failure. */
     if (session_expect_active(session)) {
+        pthread_mutex_unlock(&mgr->lock);
         log_warn("Refusing to destroy session %s: expect in progress", session_id);
         return false;
     }
-    
+
+    /* Mark inactive immediately to prevent concurrent access */
+    session->active = false;
+
     /* Kill the whole process group and reap (SIGTERM, grace, SIGKILL) */
     log_debug("Killing process group for session %s: pgid=%d", session_id, session->pid);
     session_kill_and_reap(session);
-    
+
     /* Remove PTY FD from multiplexer */
     if (session->pty && mgr->mux) {
         int pty_fd = pty_get_master_fd(session->pty);
@@ -773,7 +844,8 @@ bool session_manager_destroy_session(session_manager_t *mgr, const char *session
 
 int session_manager_list(session_manager_t *mgr, session_info_t *infos, int max_count) {
     if (!mgr || !infos || max_count <= 0) return 0;
-    
+
+    pthread_mutex_lock(&mgr->lock);
     int count = 0;
     for (int i = 0; i < MAX_SESSIONS && count < max_count; i++) {
         if (mgr->sessions[i].active) {
@@ -781,7 +853,8 @@ int session_manager_list(session_manager_t *mgr, session_info_t *infos, int max_
             count++;
         }
     }
-    
+    pthread_mutex_unlock(&mgr->lock);
+
     return count;
 }
 
@@ -791,9 +864,10 @@ int session_manager_count(const session_manager_t *mgr) {
 
 int session_manager_cleanup_dead_sessions(session_manager_t *mgr) {
     if (!mgr) return 0;
-    
+
     int cleaned = 0;
-    
+
+    pthread_mutex_lock(&mgr->lock);
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (!mgr->sessions[i].active) continue;
         
@@ -820,10 +894,12 @@ int session_manager_cleanup_dead_sessions(session_manager_t *mgr) {
         }
     }
     
+    pthread_mutex_unlock(&mgr->lock);
+
     if (cleaned > 0) {
         log_debug("Cleaned up %d dead sessions", cleaned);
     }
-    
+
     return cleaned;
 }
 
@@ -853,7 +929,7 @@ int session_get_pty_fd(const session_t *session) {
 }
 
 ssize_t session_send_input(session_t *session, const char *data, size_t len) {
-    if (!session || !data || len == 0) return -1;
+    if (!session || !session->active || !data || len == 0) return -1;
     
     if (!session->pty) {
         log_error("Session PTY not open");
@@ -889,9 +965,8 @@ ssize_t session_read_output(session_t *session, char *buffer, size_t size) {
     size_t n = session_read_raw_output(session, buffer, size);
     
     if (n == 0) {
-        /* No data available - set errno for expect engine */
-        errno = EAGAIN;
-        return -1;
+        /* No data available - return 0 (not an error) */
+        return 0;
     }
     
     if (n > 0) {
@@ -902,7 +977,7 @@ ssize_t session_read_output(session_t *session, char *buffer, size_t size) {
 }
 
 bool session_resize(session_t *session, int rows, int cols) {
-    if (!session || rows <= 0 || cols <= 0) return false;
+    if (!session || !session->active || rows <= 0 || cols <= 0) return false;
     
     if (!pty_resize(session->pty, rows, cols)) {
         log_error("Failed to resize PTY");
@@ -928,16 +1003,23 @@ bool session_resize(session_t *session, int rows, int cols) {
 
 bool session_is_alive(const session_t *session) {
     if (!session || !session->active) return false;
-    
+
     if (session->state == SESSION_STATE_DEAD) return false;
-    
+
     if (session->pid <= 0) return false;
-    
-    /* Check if process exists */
-    if (kill(session->pid, 0) < 0) {
+
+    /* Use waitpid(WNOHANG) for a definitive check (avoids TOCTOU race) */
+    int status;
+    pid_t result = waitpid(session->pid, &status, WNOHANG);
+    if (result == session->pid) {
+        /* Process has exited */
         return false;
     }
-    
+    if (result < 0 && errno == ECHILD) {
+        /* Process doesn't exist (already reaped or never existed) */
+        return false;
+    }
+
     return true;
 }
 
@@ -1001,7 +1083,7 @@ int session_get_fd(session_t *session) {
  * @return Number of bytes available in raw buffer
  */
 size_t session_get_raw_available(const session_t *session) {
-    if (!session || !session->raw_buffer) {
+    if (!session || !session->active || !session->raw_buffer) {
         return 0;
     }
     return session->raw_available;
@@ -1015,7 +1097,7 @@ size_t session_get_raw_available(const session_t *session) {
  * @return Number of bytes read
  */
 size_t session_read_raw_output(session_t *session, char *buffer, size_t size) {
-    if (!session || !session->raw_buffer || !buffer || size == 0) {
+    if (!session || !session->active || !session->raw_buffer || !buffer || size == 0) {
         return 0;
     }
     
@@ -1040,7 +1122,7 @@ size_t session_read_raw_output(session_t *session, char *buffer, size_t size) {
  * @return Number of bytes peeked
  */
 size_t session_peek_raw_output(const session_t *session, char *buffer, size_t size) {
-    if (!session || !session->raw_buffer || !buffer || size == 0) {
+    if (!session || !session->active || !session->raw_buffer || !buffer || size == 0) {
         return 0;
     }
     
@@ -1085,13 +1167,19 @@ int session_start_expect(session_t *session, bool skip_seeding) {
     /* Conditionally seed expect buffer based on skip_seeding flag */
     if (!skip_seeding && session->screen) {
         session->expect_buffer_used = 0;
-        char screen_text[65536];
-        size_t screen_len = screen_buffer_get_text(session->screen, screen_text, sizeof(screen_text) - 1);
+        /* Use heap allocation to avoid 64KB stack buffer */
+        size_t screen_text_size = 65536;
+        char *screen_text = malloc(screen_text_size);
+        if (!screen_text) {
+            log_error("Failed to allocate screen text buffer");
+            return -1;
+        }
+        size_t screen_len = screen_buffer_get_text(session->screen, screen_text, screen_text_size - 1);
         
         if (screen_len > 0) {
             size_t copy_size = screen_len;
-            if (copy_size > session->expect_buffer_size) {
-                copy_size = session->expect_buffer_size;
+            if (copy_size >= session->expect_buffer_size) {
+                copy_size = session->expect_buffer_size - 1;
             }
             
             memcpy(session->expect_buffer, screen_text, copy_size);
@@ -1101,6 +1189,7 @@ int session_start_expect(session_t *session, bool skip_seeding) {
         } else {
             log_debug("Screen buffer empty, expect buffer not seeded");
         }
+        free(screen_text);
     } else if (skip_seeding) {
         /* Incoming-only mode: start with an empty expect buffer so only
          * PTY output arriving after expect activation is matched. */
@@ -1247,11 +1336,12 @@ ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size
 }
 
 void session_clear_raw_buffer(session_t *session) {
-    if (!session || !session->raw_buffer) {
+    if (!session || !session->active || !session->raw_buffer) {
         return;
     }
     
     session->raw_read_pos = session->raw_write_pos;
+    session->raw_available = 0;
 }
 
 int session_get_scrollback_size(const session_t *session) {
@@ -1322,6 +1412,10 @@ char* session_read_line_range(session_t *session,
         return NULL;
     }
     
+    if (!session->active) {
+        return strdup("");
+    }
+    
     /* Validate range */
     if (start_line < 1 || end_line < start_line) {
         log_error("Invalid line range: %llu-%llu", start_line, end_line);
@@ -1345,8 +1439,10 @@ char* session_read_line_range(session_t *session,
     log_debug("Reading line range %llu-%llu from session %s (total_lines=%llu, file_map_count=%d)",
               start_line, end_line, session->id, session->total_lines_written, session->file_map_count);
     
-    /* Check rotated files (in file_map) */
-    for (int i = 0; i < session->file_map_count && i < MAX_ROTATE_FILES; i++) {
+    /* Check rotated files (in file_map) - iterate over all valid entries */
+    int entries_to_check = (session->file_map_count < MAX_ROTATE_FILES) ?
+                           session->file_map_count : MAX_ROTATE_FILES;
+    for (int i = 0; i < entries_to_check; i++) {
         if (start_line <= session->file_map[i].end_line &&
             end_line >= session->file_map[i].start_line) {
             
@@ -1404,17 +1500,28 @@ char* session_read_line_range(session_t *session,
             if (chunk && chunk_len > 0) {
                 /* Append to result */
                 char *new_result = realloc(result, result_size + chunk_len);
-                if (new_result) {
-                    result = new_result;
-                    memcpy(result + result_size, chunk, chunk_len);
-                    result_size += chunk_len;
+                if (!new_result) {
+                    free(chunk);
+                    free(result);
+                    return NULL;
                 }
+                result = new_result;
+                memcpy(result + result_size, chunk, chunk_len);
+                result_size += chunk_len;
                 free(chunk);
             }
         }
     }
-    
+
     *out_len = result_size;
+    
+    /* Return empty string instead of NULL for "no data" case,
+     * to distinguish from error (NULL with out_len=0) */
+    if (result == NULL) {
+        result = strdup("");
+        if (!result) return NULL;
+        *out_len = 0;
+    }
     return result;
 }
 

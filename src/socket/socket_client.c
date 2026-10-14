@@ -40,9 +40,16 @@ int socket_client_connect(socket_client_t *client, const char *socket_path) {
         return -1;
     }
     
-    /* Save socket path */
+    /* Save socket path (ensure NUL termination) */
     strncpy(client->socket_path, socket_path, sizeof(client->socket_path) - 1);
-    
+    client->socket_path[sizeof(client->socket_path) - 1] = '\0';
+
+    /* Set receive timeout */
+    struct timeval tv;
+    tv.tv_sec = 60;
+    tv.tv_usec = 0;
+    setsockopt(client->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     log_debug("Connected to socket: %s", socket_path);
     return 0;
 }
@@ -68,27 +75,49 @@ int socket_client_send_request(socket_client_t *client,
     /* Send request length (4 bytes, network byte order) */
     size_t request_len = strlen(request);
     uint32_t len_net = htonl((uint32_t)request_len);
-    
-    if (write(client->fd, &len_net, sizeof(len_net)) != sizeof(len_net)) {
-        log_error("Failed to send request length: %s", strerror(errno));
-        return -1;
+
+    /* Write length prefix with retry on partial write */
+    size_t total = 0;
+    while (total < sizeof(len_net)) {
+        ssize_t w = write(client->fd, (char*)&len_net + total, sizeof(len_net) - total);
+        if (w <= 0) {
+            log_error("Failed to send request length: %s", strerror(errno));
+            return -1;
+        }
+        total += (size_t)w;
     }
-    
-    /* Send request */
-    if (write(client->fd, request, request_len) != (ssize_t)request_len) {
-        log_error("Failed to send request: %s", strerror(errno));
-        return -1;
+
+    /* Write request body with retry on partial write */
+    total = 0;
+    while (total < request_len) {
+        ssize_t w = write(client->fd, request + total, request_len - total);
+        if (w <= 0) {
+            log_error("Failed to send request: %s", strerror(errno));
+            return -1;
+        }
+        total += (size_t)w;
     }
     
     log_debug("Sent request: %s", request);
     
     /* Read response length */
     uint32_t response_len_net;
-    if (read(client->fd, &response_len_net, sizeof(response_len_net)) != sizeof(response_len_net)) {
-        log_error("Failed to read response length: %s", strerror(errno));
-        return -1;
+    size_t len_read = 0;
+    while (len_read < sizeof(response_len_net)) {
+        ssize_t n = read(client->fd, (char*)&response_len_net + len_read,
+                          sizeof(response_len_net) - len_read);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            log_error("Failed to read response length: %s", strerror(errno));
+            return -1;
+        }
+        if (n == 0) {
+            log_error("Connection closed while reading response length");
+            return -1;
+        }
+        len_read += (size_t)n;
     }
-    
+
     size_t response_len = ntohl(response_len_net);
     
     /* Check buffer size */
@@ -97,15 +126,27 @@ int socket_client_send_request(socket_client_t *client,
         return -1;
     }
     
+    /* Handle zero-length response */
+    if (response_len == 0) {
+        response[0] = '\0';
+        log_debug("Received zero-length response");
+        return 0;
+    }
+    
     /* Read response */
     size_t total_read = 0;
     while (total_read < response_len) {
         ssize_t n = read(client->fd, response + total_read, response_len - total_read);
-        if (n <= 0) {
+        if (n < 0) {
+            if (errno == EINTR) continue;
             log_error("Failed to read response: %s", strerror(errno));
             return -1;
         }
-        total_read += n;
+        if (n == 0) {
+            log_error("Connection closed while reading response");
+            return -1;
+        }
+        total_read += (size_t)n;
     }
     
     /* Null-terminate */

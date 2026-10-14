@@ -2,6 +2,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <limits.h>
 
 /* Control characters */
 #define CTRL_BEL  0x07  /* Bell */
@@ -176,6 +177,13 @@ bool vt100_parser_feed(vt100_parser_t *parser, char ch, vt100_sequence_t *seq) {
                 seq->text[1] = '\0';
                 seq->text_len = 1;
                 return true;
+            } else if ((unsigned char)ch >= 0x80) {
+                /* Pass through high bytes (UTF-8 continuation/lead bytes) */
+                seq->type = VT100_SEQ_PRINT;
+                seq->text[0] = ch;
+                seq->text[1] = '\0';
+                seq->text_len = 1;
+                return true;
             }
             /* Ignore other control characters */
             return false;
@@ -219,8 +227,12 @@ bool vt100_parser_feed(vt100_parser_t *parser, char ch, vt100_sequence_t *seq) {
                 parser->private_mode = true;
                 return false;
             } else if (ch >= '0' && ch <= '9') {
-                /* Build parameter */
-                parser->current_param = parser->current_param * 10 + (ch - '0');
+                /* Build parameter with overflow check */
+                if (parser->current_param > (INT_MAX - 9) / 10) {
+                    parser->current_param = INT_MAX;
+                } else {
+                    parser->current_param = parser->current_param * 10 + (ch - '0');
+                }
                 return false;
             } else if (ch == ';') {
                 /* Parameter separator */

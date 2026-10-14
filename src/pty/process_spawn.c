@@ -36,49 +36,43 @@ static void child_fatal(const char *msg) {
     _exit(1);
 }
 
-/* Helper: Drop privileges to specified user/group */
+/* Helper: Drop privileges to specified user/group
+ * WARNING: This function is called in the child process after fork().
+ * It must only use async-signal-safe functions. No logging, no malloc.
+ * Errors are reported via child_fatal() which writes to stderr. */
 static bool drop_privileges(const process_credentials_t *creds) {
     if (!creds || (creds->uid == 0 && creds->gid == 0)) {
         return true;  /* No privilege separation requested */
     }
-    
+
     /* Drop group privileges first */
     if (creds->gid != 0) {
         if (setgid(creds->gid) < 0) {
-            log_error("setgid(%d) failed: %s", creds->gid, strerror(errno));
+            child_fatal("pshell: setgid failed\n");
             return false;
         }
-        
+
         /* Clear supplementary groups */
         if (setgroups(0, NULL) < 0) {
-            log_error("setgroups failed: %s", strerror(errno));
+            child_fatal("pshell: setgroups failed\n");
             return false;
         }
-        
-        log_debug("Dropped group privileges to GID %d", creds->gid);
     }
-    
+
     /* Drop user privileges */
     if (creds->uid != 0) {
         if (setuid(creds->uid) < 0) {
-            log_error("setuid(%d) failed: %s", creds->uid, strerror(errno));
+            child_fatal("pshell: setuid failed\n");
             return false;
         }
-        
-        log_debug("Dropped user privileges to UID %d", creds->uid);
     }
-    
+
     /* Verify we can't regain privileges */
     if (creds->uid != 0 && setuid(0) == 0) {
-        log_error("Failed to permanently drop privileges - can still become root!");
+        child_fatal("pshell: failed to permanently drop privileges\n");
         return false;
     }
-    
-    if (creds->username) {
-        log_info("Running as user: %s (UID=%d, GID=%d)", 
-                 creds->username, creds->uid, creds->gid);
-    }
-    
+
     return true;
 }
 
@@ -208,10 +202,8 @@ pid_t process_spawn_argv_with_creds(pty_t *pty, char **argv, char **env, const p
         // child keeps ports and sockets bound after the daemon dies (observed:
         // orphaned children holding the HTTP listener) and pins PTYs open. FDs
         // 0/1/2 are the redirected slave and are preserved.
-        long max_fd = sysconf(_SC_OPEN_MAX);
-        if (max_fd < 0 || max_fd > MAX_INHERITED_FD) {
-            max_fd = MAX_INHERITED_FD;
-        }
+        /* Use a reasonable upper bound instead of sysconf (not async-signal-safe) */
+        long max_fd = MAX_INHERITED_FD;
         for (int fd = STDERR_FILENO + 1; fd < (int)max_fd; fd++) {
             close(fd);
         }
@@ -221,8 +213,21 @@ pid_t process_spawn_argv_with_creds(pty_t *pty, char **argv, char **env, const p
             child_fatal("pshell: failed to drop privileges\n");
         }
         
-        // Set TERM environment variable
-        setenv("TERM", "xterm-256color", 1);
+        // Set TERM environment variable (async-signal-safe: write to environ directly)
+        {
+            static char term_env[] = "TERM=xterm-256color";
+            char **ep;
+            for (ep = environ; *ep; ep++) {
+                if (strncmp(*ep, "TERM=", 5) == 0) {
+                    *ep = term_env;
+                    break;
+                }
+            }
+            if (!*ep) {
+                /* TERM not found in environ - can't safely add without malloc */
+                /* The child will inherit the parent's TERM or none */
+            }
+        }
         
         // Execute command
         if (env) {
@@ -289,10 +294,13 @@ bool process_wait(pid_t pid, int *status, int timeout_ms) {
     if (pid <= 0) return false;
     
     if (timeout_ms < 0) {
-        // Blocking wait
+        // Blocking wait (retry on EINTR)
         int stat;
-        pid_t result = waitpid(pid, &stat, 0);
-        
+        pid_t result;
+        do {
+            result = waitpid(pid, &stat, 0);
+        } while (result < 0 && errno == EINTR);
+
         if (result == pid) {
             if (status) *status = stat;
             return true;

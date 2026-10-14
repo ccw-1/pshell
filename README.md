@@ -750,6 +750,6 @@ See **[PROGRESS.md](PROGRESS.md)** for detailed implementation status.
 ---
 
 **Version**: 1.1.0 (MCP server + async expect)  
-**Last Updated**: 2026-10-13
+**Last Updated**: 2026-10-10
 
 See [CHANGELOG.md](CHANGELOG.md) for release history and [VERSION](VERSION) for the current version.

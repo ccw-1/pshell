@@ -60,33 +60,80 @@ static void send_response(socket_connection_t *conn, const char *response) {
     /* Send length prefix (4 bytes, network byte order) */
     size_t len = strlen(response);
     uint32_t len_net = htonl((uint32_t)len);
-    
+
     int fd = socket_connection_get_fd(conn);
-    if (write(fd, &len_net, sizeof(len_net)) != sizeof(len_net)) {
-        log_error("Failed to send response length");
-        return;
+
+    /* Write length prefix with retry on partial write */
+    size_t total = 0;
+    while (total < sizeof(len_net)) {
+        ssize_t w = write(fd, (char*)&len_net + total, sizeof(len_net) - total);
+        if (w <= 0) {
+            log_error("Failed to send response length: %s", strerror(errno));
+            return;
+        }
+        total += (size_t)w;
     }
-    
-    /* Send response */
-    if (write(fd, response, len) != (ssize_t)len) {
-        log_error("Failed to send response");
-        return;
+
+    /* Write response body with retry on partial write */
+    total = 0;
+    while (total < len) {
+        ssize_t w = write(fd, response + total, len - total);
+        if (w <= 0) {
+            log_error("Failed to send response: %s", strerror(errno));
+            return;
+        }
+        total += (size_t)w;
     }
 }
 
 static void send_error(socket_connection_t *conn, const char *message) {
     char response[1024];
-    snprintf(response, sizeof(response),
-             "{\"status\":\"error\",\"error\":{\"message\":\"%s\"}}",
-             message);
+    size_t pos = 0;
+    
+    pos += snprintf(response + pos, sizeof(response) - pos,
+                    "{\"status\":\"error\",\"error\":{\"message\":\"");
+    
+    /* Escape message for JSON */
+    if (message) {
+        for (const char *p = message; *p && pos < sizeof(response) - 8; p++) {
+            char c = *p;
+            switch (c) {
+                case '"':  response[pos++] = '\\'; response[pos++] = '"';  break;
+                case '\\': response[pos++] = '\\'; response[pos++] = '\\'; break;
+                case '\n': response[pos++] = '\\'; response[pos++] = 'n';  break;
+                case '\r': response[pos++] = '\\'; response[pos++] = 'r';  break;
+                case '\t': response[pos++] = '\\'; response[pos++] = 't';  break;
+                default:
+                    if ((unsigned char)c < 0x20) {
+                        int n = snprintf(response + pos, sizeof(response) - pos, "\\u%04x", (unsigned char)c);
+                        if (n < 0 || (size_t)n >= sizeof(response) - pos) {
+                            pos = sizeof(response) - 1;
+                            response[pos] = '\0';
+                            goto send_it;
+                        }
+                        pos += (size_t)n;
+                    } else {
+                        response[pos++] = c;
+                    }
+                    break;
+            }
+        }
+    }
+    
+send_it:
+    pos += snprintf(response + pos, sizeof(response) - pos, "\"}}");
     send_response(conn, response);
 }
 
 static void send_success(socket_connection_t *conn, const char *result) {
     char response[8192];
-    snprintf(response, sizeof(response),
-             "{\"status\":\"success\",\"result\":%s}",
-             result ? result : "{}");
+    int n = snprintf(response, sizeof(response),
+                     "{\"status\":\"success\",\"result\":%s}",
+                     result ? result : "{}");
+    if (n < 0 || (size_t)n >= sizeof(response)) {
+        send_error(conn, "Response too large");
+        return;
+    }
     send_response(conn, response);
 }
 
@@ -173,6 +220,10 @@ static void handle_create_session(socket_connection_t *conn, json_value_t *param
     /* Use default shell if command not specified */
     if (!command) {
         command = get_default_shell();
+        if (!command) {
+            send_error(conn, "No command specified and no default shell available");
+            return;
+        }
         log_debug("Using default shell: %s", command);
     }
     
@@ -219,6 +270,7 @@ static void handle_list_sessions(socket_connection_t *conn, json_value_t *params
          * the output is truncated and len must not grow further (otherwise
          * cap - len underflows and the next write goes out of bounds). */
         size_t rem = (len < cap) ? cap - len : 0;
+        size_t before = len;
         n = snprintf(result + len, rem,
                      "%s{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
                      i > 0 ? "," : "",
@@ -230,6 +282,7 @@ static void handle_list_sessions(socket_connection_t *conn, json_value_t *params
                      state_to_string(sessions[i].state));
         if (n < 0 || (size_t)n >= rem) {
             log_warn("list_sessions response truncated at %d sessions", i);
+            len = before;  /* Roll back to last good position */
             break;
         }
         len += (size_t)n;
@@ -401,7 +454,7 @@ static void handle_get_output(socket_connection_t *conn, json_value_t *params, s
             case '"': offset += snprintf(result + offset, sizeof(result) - offset, "\\\""); break;
             case '\\': offset += snprintf(result + offset, sizeof(result) - offset, "\\\\"); break;
             default:
-                if (output[i] >= 32 || output[i] == '\n' || output[i] == '\r' || output[i] == '\t') {
+                if ((unsigned char)output[i] >= 32) {
                     result[offset++] = output[i];
                 }
                 break;
@@ -453,7 +506,7 @@ static void handle_get_screen(socket_connection_t *conn, json_value_t *params, s
             case '"': offset += snprintf(result + offset, sizeof(result) - offset, "\\\""); break;
             case '\\': offset += snprintf(result + offset, sizeof(result) - offset, "\\\\"); break;
             default:
-                if (screen[i] >= 32 || screen[i] == '\n' || screen[i] == '\r' || screen[i] == '\t') {
+                if ((unsigned char)screen[i] >= 32) {
                     result[offset++] = screen[i];
                 }
                 break;
@@ -529,7 +582,13 @@ static void append_json_escaped(char *out, size_t out_size, size_t *pos, const c
             case '\t': out[(*pos)++] = '\\'; out[(*pos)++] = 't';  break;
             default:
                 if ((unsigned char)c < 0x20) {
-                    *pos += (size_t)snprintf(out + *pos, out_size - *pos, "\\u%04x", (unsigned char)c);
+                    int n = snprintf(out + *pos, out_size - *pos, "\\u%04x", (unsigned char)c);
+                    if (n < 0 || (size_t)n >= out_size - *pos) {
+                        *pos = out_size - 1;
+                        out[*pos] = '\0';
+                        return;
+                    }
+                    *pos += (size_t)n;
                 } else {
                     out[(*pos)++] = c;
                 }
@@ -543,17 +602,25 @@ static void append_json_escaped(char *out, size_t out_size, size_t *pos, const c
 static void send_fd_response(int fd, const char *response) {
     size_t len = strlen(response);
     uint32_t len_net = htonl((uint32_t)len);
-    
-    ssize_t w = write(fd, &len_net, sizeof(len_net));
-    if (w != (ssize_t)sizeof(len_net)) {
-        log_error("expect worker: failed to write response length: %s", strerror(errno));
-        return;
-    }
-    
+
+    /* Write length prefix with retry on partial write */
     size_t total = 0;
+    while (total < sizeof(len_net)) {
+        ssize_t w = write(fd, (char*)&len_net + total, sizeof(len_net) - total);
+        if (w <= 0) {
+            if (w < 0 && errno == EINTR) continue;
+            log_error("expect worker: failed to write response length: %s", strerror(errno));
+            return;
+        }
+        total += (size_t)w;
+    }
+
+    /* Write response body with retry on partial write */
+    total = 0;
     while (total < len) {
         ssize_t n = write(fd, response + total, len - total);
         if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
             log_error("expect worker: failed to write response: %s", strerror(errno));
             return;
         }
@@ -786,8 +853,8 @@ static void handle_get_scrollback(socket_connection_t *conn, json_value_t *param
         return;
     }
     
-    /* Limit count to available lines */
-    if (start_line + count > scrollback_used) {
+    /* Limit count to available lines (avoid integer overflow) */
+    if (count > scrollback_used - start_line) {
         count = scrollback_used - start_line;
     }
     
@@ -798,17 +865,28 @@ static void handle_get_scrollback(socket_connection_t *conn, json_value_t *param
                          scrollback_size, scrollback_used, start_line, count);
     
     for (int i = 0; i < count && offset < (int)sizeof(result) - 100; i++) {
-        char line_buffer[256];
+        char line_buffer[4096];
         ssize_t line_len = session_get_scrollback_line(session, start_line + i, line_buffer, sizeof(line_buffer));
         
         if (line_len < 0) break;
         
-        if (i > 0) {
-            offset += snprintf(result + offset, sizeof(result) - offset, ",");
+        /* Check if line was truncated */
+        if (line_len >= (ssize_t)sizeof(line_buffer)) {
+            /* Line too long - skip or send error */
+            log_warn("Scrollback line %d truncated (%zd bytes)", start_line + i, line_len);
+            /* Continue with truncated line */
         }
-        
-        offset += snprintf(result + offset, sizeof(result) - offset, "\"");
-        
+
+        if (i > 0) {
+            int n = snprintf(result + offset, sizeof(result) - offset, ",");
+            if (n < 0 || (size_t)n >= sizeof(result) - offset) break;
+            offset += (size_t)n;
+        }
+
+        int n = snprintf(result + offset, sizeof(result) - offset, "\"");
+        if (n < 0 || (size_t)n >= sizeof(result) - offset) break;
+        offset += (size_t)n;
+
         /* Escape line for JSON */
         for (ssize_t j = 0; j < line_len && offset < (int)sizeof(result) - 10; j++) {
             switch (line_buffer[j]) {
@@ -818,7 +896,7 @@ static void handle_get_scrollback(socket_connection_t *conn, json_value_t *param
                 case '"': offset += snprintf(result + offset, sizeof(result) - offset, "\\\""); break;
                 case '\\': offset += snprintf(result + offset, sizeof(result) - offset, "\\\\"); break;
                 default:
-                    if (line_buffer[j] >= 32) {
+                    if ((unsigned char)line_buffer[j] >= 32) {
                         result[offset++] = line_buffer[j];
                     }
                     break;
@@ -847,7 +925,7 @@ static void handle_get_lines(socket_connection_t *conn, json_value_t *params, se
     
     /* Get line range parameters */
     int start_line = json_object_get_int(params, "start_line", 0);
-    int end_line = json_object_get_int(params, "end_line", 0);
+    int end_line = json_object_get_int(params, "end_line", -1);
     
     /* Get session */
     session_t *session = session_manager_get(mgr, session_id);
@@ -885,7 +963,7 @@ static void handle_get_lines(socket_connection_t *conn, json_value_t *params, se
     }
     
     /* Build response - need to escape content for JSON */
-    size_t result_capacity = content_len * 2 + 1024;  /* Extra space for escaping */
+    size_t result_capacity = content_len * 6 + 1024;  /* Extra space for escaping */
     char *result = malloc(result_capacity);
     if (!result) {
         free(content);
@@ -907,7 +985,7 @@ static void handle_get_lines(socket_connection_t *conn, json_value_t *params, se
             case '"': offset += snprintf(result + offset, result_capacity - offset, "\\\""); break;
             case '\\': offset += snprintf(result + offset, result_capacity - offset, "\\\\"); break;
             default:
-                if (content[i] >= 32 || content[i] == '\n' || content[i] == '\r' || content[i] == '\t') {
+                if ((unsigned char)content[i] >= 32) {
                     result[offset++] = content[i];
                 }
                 break;

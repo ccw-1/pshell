@@ -13,6 +13,7 @@
 #include "pshell/logger.h"
 #include "pshell/socket_client.h"
 #include "pshell/string_utils.h"
+#include <fcntl.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -300,6 +301,17 @@ static bool spawn_daemon(void) {
     }
 
     if (pid == 0) {
+        /* Close stdin/stdout to prevent daemon output from corrupting
+         * the MCP protocol stream */
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        /* Redirect stderr to /dev/null as well */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
+
         if (config) {
             execl(bin, bin, "-c", config, (char *)NULL);
         } else {

@@ -18,8 +18,22 @@
 #include <time.h>
 #include <stdint.h>
 #include <signal.h>
+#include <limits.h>
 
 #define DEFAULT_SOCKET_PATH "/tmp/pshell.sock"
+
+/* Safe atoi replacement: returns 0 on error and sets errno */
+static int safe_atoi(const char *str, int *out) {
+    if (!str) return 0;
+    errno = 0;
+    char *endptr;
+    long val = strtol(str, &endptr, 10);
+    if (errno == ERANGE || *endptr != '\0' || val < INT_MIN || val > INT_MAX) {
+        return 0;
+    }
+    *out = (int)val;
+    return 1;
+}
 
 /* Forward declarations */
 static void print_usage(const char *prog);
@@ -130,11 +144,20 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
         if (strcmp(argv[i], "--command") == 0 && i + 1 < argc) {
             command = argv[++i];
         } else if (strcmp(argv[i], "--rows") == 0 && i + 1 < argc) {
-            rows = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &rows) || rows <= 0) {
+                fprintf(stderr, "Invalid --rows value\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--cols") == 0 && i + 1 < argc) {
-            cols = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &cols) || cols <= 0) {
+                fprintf(stderr, "Invalid --cols value\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--scrollback") == 0 && i + 1 < argc) {
-            scrollback_lines = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &scrollback_lines) || scrollback_lines < 0) {
+                fprintf(stderr, "Invalid --scrollback value\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
             output_file = argv[++i];
         } else if (strcmp(argv[i], "--rotate") == 0 && i + 1 < argc) {
@@ -151,22 +174,35 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
         }
     }
     
-    /* Build request */
-    char request[1024];
+    /* Build request with dynamic buffer to avoid truncation */
+    size_t request_size = 512 + (command ? strlen(command) : 0) +
+                          (output_file ? strlen(output_file) : 0);
+    char *request = malloc(request_size);
+    if (!request) {
+        fprintf(stderr, "Failed to allocate request buffer\n");
+        return 1;
+    }
+
+    int n;
     if (output_file) {
         if (rotate_count > 0 && rotate_lines > 0) {
-            snprintf(request, sizeof(request),
-                     "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d,\"output_file\":\"%s\",\"rotate_count\":%d,\"rotate_lines\":%d}}",
-                     command, rows, cols, scrollback_lines, output_file, rotate_count, rotate_lines);
+            n = snprintf(request, request_size,
+                         "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d,\"output_file\":\"%s\",\"rotate_count\":%d,\"rotate_lines\":%d}}",
+                         command, rows, cols, scrollback_lines, output_file, rotate_count, rotate_lines);
         } else {
-            snprintf(request, sizeof(request),
-                     "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d,\"output_file\":\"%s\"}}",
-                     command, rows, cols, scrollback_lines, output_file);
+            n = snprintf(request, request_size,
+                         "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d,\"output_file\":\"%s\"}}",
+                         command, rows, cols, scrollback_lines, output_file);
         }
     } else {
-        snprintf(request, sizeof(request),
-                 "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d}}",
-                 command, rows, cols, scrollback_lines);
+        n = snprintf(request, request_size,
+                     "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d}}",
+                     command, rows, cols, scrollback_lines);
+    }
+    if (n < 0 || (size_t)n >= request_size) {
+        fprintf(stderr, "Failed to build request\n");
+        free(request);
+        return 1;
     }
     
     /* Send request */
@@ -483,8 +519,15 @@ static int cmd_resize(socket_client_t *client, int argc, char **argv) {
     }
     
     const char *session_id = argv[0];
-    int rows = atoi(argv[1]);
-    int cols = atoi(argv[2]);
+    int rows = 0, cols = 0;
+    if (!safe_atoi(argv[1], &rows) || rows <= 0) {
+        fprintf(stderr, "Invalid rows value\n");
+        return 1;
+    }
+    if (!safe_atoi(argv[2], &cols) || cols <= 0) {
+        fprintf(stderr, "Invalid cols value\n");
+        return 1;
+    }
     
     /* Build request */
     char request[512];
@@ -532,9 +575,15 @@ static int cmd_scrollback(socket_client_t *client, int argc, char **argv) {
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--start") == 0 && i + 1 < argc) {
-            start_line = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &start_line) || start_line < 0) {
+                fprintf(stderr, "Invalid --start value\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) {
-            count = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &count) || count <= 0) {
+                fprintf(stderr, "Invalid --count value\n");
+                return 1;
+            }
         }
     }
     
@@ -617,13 +666,25 @@ static int cmd_lines(socket_client_t *client, int argc, char **argv) {
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--start") == 0 && i + 1 < argc) {
-            start_line = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &start_line) || start_line < 1) {
+                fprintf(stderr, "Invalid --start value (must be >= 1)\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--end") == 0 && i + 1 < argc) {
-            end_line = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &end_line) || end_line < 1) {
+                fprintf(stderr, "Invalid --end value (must be >= 1)\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--tail") == 0 && i + 1 < argc) {
-            tail_lines = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &tail_lines) || tail_lines <= 0) {
+                fprintf(stderr, "Invalid --tail value (must be > 0)\n");
+                return 1;
+            }
         } else if (strcmp(argv[i], "--head") == 0 && i + 1 < argc) {
-            head_lines = atoi(argv[++i]);
+            if (!safe_atoi(argv[++i], &head_lines) || head_lines <= 0) {
+                fprintf(stderr, "Invalid --head value (must be > 0)\n");
+                return 1;
+            }
         }
     }
     
@@ -795,7 +856,13 @@ static int cmd_expect(socket_client_t *client, int argc, char **argv) {
     
     const char *session_id = argv[0];
     const char *pattern = argv[1];
-    int timeout = argc > 2 ? atoi(argv[2]) : 5000;
+    int timeout = 5000;
+    if (argc > 2) {
+        if (!safe_atoi(argv[2], &timeout) || timeout <= 0) {
+            fprintf(stderr, "Invalid timeout value (must be > 0)\n");
+            return 1;
+        }
+    }
     
     /* Build request */
     char request[1024];
@@ -973,8 +1040,7 @@ static int cmd_generate_key(int argc, char **argv) {
     /* Parse arguments */
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--length") == 0 && i + 1 < argc) {
-            key_length = atoi(argv[i + 1]);
-            if (key_length < 16 || key_length > 64) {
+            if (!safe_atoi(argv[i + 1], &key_length) || key_length < 16 || key_length > 64) {
                 fprintf(stderr, "Error: Key length must be between 16 and 64 bytes\n");
                 return 1;
             }

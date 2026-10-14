@@ -9,11 +9,11 @@
 #define EXPECT_BUFFER_SIZE 65536
 #define EXPECT_READ_SIZE 4096
 
-/* Get current time in milliseconds */
+/* Get current time in milliseconds (monotonic clock) */
 static long long get_time_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 expect_context_t *expect_context_create(session_t *session, int timeout_ms, expect_flags_t flags) {
@@ -272,6 +272,19 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
         memcpy(ctx->buffer + ctx->buffer_used, read_buf, n);
         ctx->buffer_used += n;
         ctx->buffer[ctx->buffer_used] = '\0';
+
+        /* Try matching immediately after appending data (fixes TOCTOU race
+         * where data arrives between timeout check and read) */
+        if (pattern_matcher_match(matcher, ctx->buffer, &match)) {
+            pattern_matcher_destroy(matcher);
+            if (result) {
+                *result = match;
+            } else {
+                match_result_free(&match);
+            }
+            log_debug("Pattern matched after append: '%s'", pattern);
+            return EXPECT_MATCHED;
+        }
     }
 }
 

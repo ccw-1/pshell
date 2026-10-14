@@ -1,5 +1,5 @@
 #include "pshell/timeout_manager.h"
-#include <sys/time.h>
+#include <time.h>
 #include <string.h>
 
 void timeout_init(timeout_ctx_t *ctx, int timeout_ms)
@@ -13,7 +13,7 @@ void timeout_init(timeout_ctx_t *ctx, int timeout_ms)
     ctx->has_timeout = (timeout_ms > 0);
     
     if (ctx->has_timeout) {
-        gettimeofday(&ctx->start_time, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &ctx->start_time);
     }
 }
 
@@ -38,9 +38,9 @@ int timeout_remaining(const timeout_ctx_t *ctx)
     return remaining > 0 ? remaining : 0;
 }
 
-bool timeout_to_timeval(const timeout_ctx_t *ctx, struct timeval *tv)
+bool timeout_to_timeval(const timeout_ctx_t *ctx, struct timespec *ts)
 {
-    if (!ctx || !tv) {
+    if (!ctx || !ts) {
         return false;
     }
 
@@ -50,11 +50,11 @@ bool timeout_to_timeval(const timeout_ctx_t *ctx, struct timeval *tv)
 
     int remaining = timeout_remaining(ctx);
     if (remaining <= 0) {
-        tv->tv_sec = 0;
-        tv->tv_usec = 0;
+        ts->tv_sec = 0;
+        ts->tv_nsec = 0;
     } else {
-        tv->tv_sec = remaining / 1000;
-        tv->tv_usec = (remaining % 1000) * 1000;
+        ts->tv_sec = remaining / 1000;
+        ts->tv_nsec = (remaining % 1000) * 1000000;
     }
 
     return true;
@@ -66,11 +66,11 @@ long timeout_elapsed(const timeout_ctx_t *ctx)
         return 0;
     }
 
-    struct timeval current_time;
-    gettimeofday(&current_time, NULL);
+    struct timespec current_time;
+    clock_gettime(CLOCK_MONOTONIC, &current_time);
 
     long elapsed_ms = (current_time.tv_sec - ctx->start_time.tv_sec) * 1000 +
-                     (current_time.tv_usec - ctx->start_time.tv_usec) / 1000;
+                     (current_time.tv_nsec - ctx->start_time.tv_nsec) / 1000000;
 
     return elapsed_ms;
 }
@@ -82,6 +82,6 @@ void timeout_reset(timeout_ctx_t *ctx)
     }
 
     if (ctx->has_timeout) {
-        gettimeofday(&ctx->start_time, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &ctx->start_time);
     }
 }
