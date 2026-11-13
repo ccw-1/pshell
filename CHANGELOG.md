@@ -12,10 +12,10 @@ The current version is defined in [VERSION](VERSION) and `include/pshell/version
 ### Added
 
 - `pshellctl attach <session-id>`: interactive terminal on a session over the Unix socket (no HTTP). The `attach_session` socket method replies normally, then the connection becomes a raw byte stream owned by the session (client input to the PTY, PTY output to up to 4 attached clients, screen redraw on attach). The session is resized to the attaching terminal (also on SIGWINCH); `Ctrl-]` detaches. Test: `tests/integration/test_attach.py`.
+
 ### Fixed
 
 - Daemon segfault (heap overflow) after a session was resized wider: `screen_buffer_resize` kept the scrollback allocated for the old column count, so lines scrolling off a wider screen overflowed it. The scrollback is now rebuilt at the new width (order preserved). Surfaced by `pshellctl attach`, which resizes the session to the attaching terminal; `pshellctl resize` hit the same bug. Regression test in `tests/unit/test_terminal.c` (run under ASAN).
-
 - Daemon deadlock when a session's process exited: `session_manager_cleanup_dead_sessions` held `mgr->lock` while calling `session_manager_destroy_session`, which locks it again.
 
 ## [1.2.0] - 2026-10-14
