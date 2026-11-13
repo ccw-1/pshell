@@ -9,12 +9,16 @@
 #include "pshell/json_simple.h"
 #include "pshell/logger.h"
 #include "pshell/string_utils.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <stdint.h>
 #include <signal.h>
@@ -44,6 +48,7 @@ static int cmd_send(socket_client_t *client, int argc, char **argv);
 static int cmd_output(socket_client_t *client, int argc, char **argv);
 static int cmd_screen(socket_client_t *client, int argc, char **argv);
 static int cmd_resize(socket_client_t *client, int argc, char **argv);
+static int cmd_attach(socket_client_t *client, int argc, char **argv);
 static int cmd_expect(socket_client_t *client, int argc, char **argv);
 static int cmd_expect_incoming(socket_client_t *client, int argc, char **argv);
 static int cmd_scrollback(socket_client_t *client, int argc, char **argv);
@@ -113,6 +118,10 @@ static void print_usage(const char *prog) {
     printf("\n");
     printf("  resize <session-id> <rows> <cols>\n");
     printf("      Resize terminal\n");
+    printf("\n");
+    printf("  attach <session-id>\n");
+    printf("      Open an interactive terminal on the session (like tmux attach).\n");
+    printf("      The session is resized to your terminal; press Ctrl-] to detach.\n");
     printf("\n");
     printf("  expect <session-id> <pattern> [timeout_ms]\n");
     printf("      Wait for pattern match\n");
@@ -559,6 +568,176 @@ static int cmd_resize(socket_client_t *client, int argc, char **argv) {
     }
     
     json_free(root);
+    return 0;
+}
+
+/* ---- attach: interactive terminal on a session ---- */
+
+#define ATTACH_DETACH_KEY 0x1d  /* Ctrl-] */
+
+static volatile sig_atomic_t g_attach_winch = 0;
+static volatile sig_atomic_t g_attach_quit = 0;
+
+static void attach_on_winch(int sig) { (void)sig; g_attach_winch = 1; }
+static void attach_on_term(int sig) { (void)sig; g_attach_quit = 1; }
+
+/* Write all of buf to fd (blocking), retrying on EINTR/partial writes */
+static int write_all(int fd, const char *buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        ssize_t w = write(fd, buf + total, len - total);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        total += (size_t)w;
+    }
+    return 0;
+}
+
+/* Tell the daemon the new terminal size (separate short-lived connection:
+ * the attach connection is a raw byte stream and carries no commands). */
+static void attach_send_resize(const char *socket_path, const char *session_id,
+                               int rows, int cols) {
+    socket_client_t rc;
+    if (socket_client_connect(&rc, socket_path) < 0) return;
+    char request[512];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"resize_session\",\"params\":{\"id\":\"%s\",\"rows\":%d,\"cols\":%d}}",
+             session_id, rows, cols);
+    char response[1024];
+    socket_client_send_request(&rc, request, response, sizeof(response));
+    socket_client_disconnect(&rc);
+}
+
+static int cmd_attach(socket_client_t *client, int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "Usage: attach <session-id>\n");
+        return 1;
+    }
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
+        fprintf(stderr, "attach needs a terminal on stdin and stdout\n");
+        return 1;
+    }
+    
+    const char *session_id = argv[0];
+    struct winsize ws;
+    int rows = 0, cols = 0;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) {
+        rows = ws.ws_row;
+        cols = ws.ws_col;
+    }
+    
+    /* Handshake: normal request/response; afterwards the socket is a raw stream */
+    char request[512];
+    snprintf(request, sizeof(request),
+             "{\"method\":\"attach_session\",\"params\":{\"id\":\"%s\",\"rows\":%d,\"cols\":%d}}",
+             session_id, rows, cols);
+    char response[1024];
+    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+        fprintf(stderr, "Failed to send request\n");
+        return 1;
+    }
+    json_value_t *root = json_parse(response);
+    if (!root) {
+        fprintf(stderr, "Failed to parse response\n");
+        return 1;
+    }
+    const char *status_str = json_object_get_string(root, "status");
+    if (!status_str || strcmp(status_str, "success") != 0) {
+        fprintf(stderr, "Failed to attach: session not found, dead, or too many terminals attached\n");
+        json_free(root);
+        return 1;
+    }
+    json_free(root);
+    
+    /* Raw local terminal */
+    struct termios orig, raw;
+    if (tcgetattr(STDIN_FILENO, &orig) < 0) {
+        fprintf(stderr, "tcgetattr failed: %s\n", strerror(errno));
+        return 1;
+    }
+    raw = orig;
+    cfmakeraw(&raw);
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) < 0) {
+        fprintf(stderr, "tcsetattr failed: %s\n", strerror(errno));
+        return 1;
+    }
+    
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = attach_on_winch;  /* no SA_RESTART: poll() must wake up */
+    sigaction(SIGWINCH, &sa, NULL);
+    sa.sa_handler = attach_on_term;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+    
+    const char *why = "session ended";
+    struct pollfd fds[2];
+    fds[0].fd = STDIN_FILENO;
+    fds[0].events = POLLIN;
+    fds[1].fd = client->fd;
+    fds[1].events = POLLIN;
+    
+    while (!g_attach_quit) {
+        if (g_attach_winch) {
+            g_attach_winch = 0;
+            if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) {
+                attach_send_resize(client->socket_path, session_id, ws.ws_row, ws.ws_col);
+            }
+        }
+        
+        int pr = poll(fds, 2, -1);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            why = "poll failed";
+            break;
+        }
+        
+        if (fds[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            char buf[4096];
+            ssize_t n = read(client->fd, buf, sizeof(buf));
+            if (n > 0) {
+                if (write_all(STDOUT_FILENO, buf, (size_t)n) < 0) break;
+            } else if (n == 0 || (errno != EINTR && errno != EAGAIN)) {
+                break;  /* session ended or daemon went away */
+            }
+        }
+        
+        if (fds[0].revents & (POLLIN | POLLHUP)) {
+            char buf[4096];
+            ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
+            if (n > 0) {
+                ssize_t keep = n;
+                bool detach = false;
+                for (ssize_t i = 0; i < n; i++) {
+                    if ((unsigned char)buf[i] == ATTACH_DETACH_KEY) {
+                        keep = i;
+                        detach = true;
+                        break;
+                    }
+                }
+                if (keep > 0 && write_all(client->fd, buf, (size_t)keep) < 0) {
+                    why = "connection lost";
+                    break;
+                }
+                if (detach) {
+                    why = "detached";
+                    break;
+                }
+            } else if (n == 0) {
+                why = "stdin closed";
+                break;
+            } else if (errno != EINTR && errno != EAGAIN) {
+                why = "stdin error";
+                break;
+            }
+        }
+    }
+    
+    tcsetattr(STDIN_FILENO, TCSANOW, &orig);
+    printf("\r\n[%s]\r\n", g_attach_quit ? "terminated" : why);
     return 0;
 }
 
@@ -1164,6 +1343,8 @@ int main(int argc, char **argv) {
         result = cmd_lines(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "resize") == 0) {
         result = cmd_resize(&client, cmd_argc, cmd_argv);
+    } else if (strcmp(command, "attach") == 0) {
+        result = cmd_attach(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "expect") == 0) {
         result = cmd_expect(&client, cmd_argc, cmd_argv);
     } else if (strcmp(command, "expect-incoming") == 0) {

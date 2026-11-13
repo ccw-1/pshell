@@ -42,6 +42,7 @@ static void handle_expect_pattern_incoming(socket_connection_t *conn, json_value
 static void handle_get_scrollback(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 
 static void handle_get_lines(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
+static void handle_attach_session(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
 
 
 static void handle_daemon_status(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr);
@@ -181,6 +182,8 @@ void socket_protocol_handler(socket_connection_t *conn, const char *message, voi
         handle_get_lines(conn, params, mgr);
     } else if (strcmp(method, "resize_session") == 0) {
         handle_resize_session(conn, params, mgr);
+    } else if (strcmp(method, "attach_session") == 0) {
+        handle_attach_session(conn, params, mgr);
     } else if (strcmp(method, "expect_pattern") == 0) {
         handle_expect_pattern(conn, params, mgr);
     } else if (strcmp(method, "expect_pattern_incoming") == 0) {
@@ -553,6 +556,49 @@ static void handle_resize_session(socket_connection_t *conn, json_value_t *param
     snprintf(result, sizeof(result), "{\"rows\":%d,\"cols\":%d}", rows, cols);
     
     send_success(conn, result);
+}
+
+/* Interactive attach: after the normal length-prefixed success reply the
+ * connection stops being request/response and becomes a raw byte stream
+ * owned by the session (client input -> PTY, PTY output -> client). */
+static void handle_attach_session(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {
+    if (!params) {
+        send_error(conn, "Missing params");
+        return;
+    }
+    
+    const char *session_id = json_object_get_string(params, "id");
+    if (!session_id) {
+        send_error(conn, "Missing session id");
+        return;
+    }
+    
+    session_t *session = session_manager_get(mgr, session_id);
+    if (!session) {
+        send_error(conn, "Session not found");
+        return;
+    }
+    
+    /* Optional: size the session to the attaching terminal */
+    int rows = json_object_get_int(params, "rows", 0);
+    int cols = json_object_get_int(params, "cols", 0);
+    if (rows > 0 && rows <= 512 && cols > 0 && cols <= 1024) {
+        session_resize(session, rows, cols);
+    }
+    
+    int fd = socket_connection_get_fd(conn);
+    if (!session_attach_client(session, fd)) {
+        send_error(conn, "Failed to attach (session dead or too many terminals attached)");
+        return;
+    }
+    
+    /* The session owns the fd from here on */
+    socket_connection_detach(conn);
+    
+    char result[128];
+    snprintf(result, sizeof(result), "{\"id\":\"%s\",\"attached\":true}", session_id);
+    send_success(conn, result);
+    session_attach_redraw(session, fd);
 }
 
 /* ------------------------------------------------------------------ */

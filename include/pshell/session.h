@@ -321,6 +321,28 @@ ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size
 
 void session_clear_raw_buffer(session_t *session);
 
+/* Maximum number of interactive terminals attached to one session */
+#define SESSION_MAX_ATTACH 4
+
+/**
+ * Attach an interactive client to a session. On success the session owns
+ * fd: bytes arriving on it are written to the PTY, PTY output is copied to
+ * it, and it is closed when the client disconnects or the session ends.
+ * The current screen is sent first so the client starts with a redraw.
+ * @param session Session
+ * @param fd Connected stream socket (set non-blocking by this call)
+ * @return true on success (fd now owned by the session); false leaves fd to the caller
+ */
+bool session_attach_client(session_t *session, int fd);
+
+/**
+ * Send a redraw of the current screen (clear, text, cursor position) to an
+ * attached client. Call after the handshake response has been written.
+ * @param session Session
+ * @param fd The fd passed to session_attach_client
+ */
+void session_attach_redraw(session_t *session, int fd);
+
 /**
  * Get scrollback buffer size
  * @param session Session

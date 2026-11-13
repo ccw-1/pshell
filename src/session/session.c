@@ -18,8 +18,20 @@
 #define RAW_BUFFER_SIZE (64 * 1024)  /* 64KB circular buffer for raw PTY output */
 #define MAX_ROTATE_FILES 32  /* Maximum number of rotation files to track */
 
+/* An interactive client attached to a session over the Unix socket. The
+ * connection fd becomes a raw byte stream: bytes read from it go to the PTY,
+ * PTY output is copied to it. The slot lives inside the session slot, which
+ * is never freed, so the pointer handed to the multiplexer stays valid. */
+typedef struct {
+    struct session *session;
+    int fd;
+    bool used;
+} session_attach_t;
+
 /* Forward declarations */
 static void session_pty_callback(int fd, io_event_type_t events, void *user_data);
+static void session_attach_close_all(struct session *session);
+static void session_attach_broadcast(struct session *session, const char *data, size_t len);
 static void session_flush_output_log(session_t *session);
 static void session_close_output_file(session_t *session);
 static void reap_child_blocking(pid_t pid);
@@ -48,6 +60,9 @@ struct session {
     size_t raw_read_pos;
     size_t raw_available;
     
+    /* Interactive attached clients (see session_attach_client) */
+    session_attach_t attach[SESSION_MAX_ATTACH];
+
     /* Expect buffer (active only during expect operations) */
     char *expect_buffer;
     size_t expect_buffer_size;
@@ -132,6 +147,9 @@ session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mu
  * expect_buffer is freed under its own lock. */
 static void session_free_resources(session_t *session) {
     if (!session) return;
+    
+    /* Disconnect attached terminals */
+    session_attach_close_all(session);
     
     /* Close output log file if open */
     session_close_output_file(session);
@@ -453,6 +471,9 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                 session_write_output_log(session, buffer, n);
             }
             
+            /* Copy to attached interactive terminals */
+            session_attach_broadcast(session, buffer, (size_t)n);
+            
             /* Store raw output in circular buffer */
             if (session->raw_buffer) {
                 for (ssize_t i = 0; i < n; i++) {
@@ -519,6 +540,8 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
             /* EOF - process has exited */
             log_info("PTY EOF for session %s - process exited", session->id);
             session->state = SESSION_STATE_DEAD;
+            /* Tell attached terminals the session is over (they see EOF) */
+            session_attach_close_all(session);
             /* Remove PTY FD from multiplexer to prevent spin */
             if (session->pty) {
                 int pty_fd = pty_get_master_fd(session->pty);
@@ -536,6 +559,156 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
         session->state = SESSION_STATE_DEAD;
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* Interactive attach                                                  */
+/* ------------------------------------------------------------------ */
+
+/* Disconnect one attached client: unregister from the multiplexer (deferred
+ * when called from inside a callback) and close the fd, which the client
+ * sees as EOF. */
+static void session_attach_close(session_attach_t *att) {
+    if (!att || !att->used) return;
+    if (att->session && att->session->mux) {
+        io_multiplexer_remove(att->session->mux, att->fd);
+    }
+    close(att->fd);
+    att->used = false;
+    att->fd = -1;
+}
+
+static void session_attach_close_all(session_t *session) {
+    if (!session) return;
+    for (int i = 0; i < SESSION_MAX_ATTACH; i++) {
+        session_attach_close(&session->attach[i]);
+    }
+}
+
+/* Write all of data to a non-blocking fd. Returns false on a hard error;
+ * a full socket buffer drops the remainder (a slow terminal must never
+ * stall the daemon's event loop). */
+static bool session_attach_write(int fd, const char *data, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        ssize_t w = write(fd, data + total, len - total);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return true;
+            return false;
+        }
+        total += (size_t)w;
+    }
+    return true;
+}
+
+static void session_attach_broadcast(session_t *session, const char *data, size_t len) {
+    for (int i = 0; i < SESSION_MAX_ATTACH; i++) {
+        session_attach_t *att = &session->attach[i];
+        if (!att->used) continue;
+        if (!session_attach_write(att->fd, data, len)) {
+            log_debug("Attached client write failed for session %s: %s",
+                      session->id, strerror(errno));
+            session_attach_close(att);
+        }
+    }
+}
+
+/* Client -> PTY: bytes from the attached terminal are typed into the session */
+static void session_attach_callback(int fd, io_event_type_t events, void *user_data) {
+    session_attach_t *att = (session_attach_t *)user_data;
+    if (!att || !att->used || att->fd != fd) return;
+    session_t *session = att->session;
+    
+    if (events & IO_EVENT_READ) {
+        char buffer[4096];
+        ssize_t n = read(fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            if (session->active && session->state != SESSION_STATE_DEAD) {
+                session_send_input(session, buffer, (size_t)n);
+            }
+        } else if (n == 0 ||
+                   (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+            log_info("Terminal detached from session %s", session->id);
+            session_attach_close(att);
+            return;
+        }
+    }
+    
+    if (events & IO_EVENT_ERROR) {
+        session_attach_close(att);
+    }
+}
+
+bool session_attach_client(session_t *session, int fd) {
+    if (!session || !session->active || !session->pty || !session->mux || fd < 0) return false;
+    if (session->state == SESSION_STATE_DEAD) return false;
+    
+    session_attach_t *att = NULL;
+    for (int i = 0; i < SESSION_MAX_ATTACH; i++) {
+        if (!session->attach[i].used) {
+            att = &session->attach[i];
+            break;
+        }
+    }
+    if (!att) {
+        log_warn("Session %s: too many attached terminals", session->id);
+        return false;
+    }
+    
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        log_error("Failed to make attach fd non-blocking: %s", strerror(errno));
+        return false;
+    }
+    
+    att->session = session;
+    att->fd = fd;
+    att->used = true;
+    if (!io_multiplexer_add(session->mux, fd, IO_EVENT_READ, session_attach_callback, att)) {
+        att->used = false;
+        att->fd = -1;
+        return false;
+    }
+    
+    log_info("Terminal attached to session %s", session->id);
+    return true;
+}
+
+void session_attach_redraw(session_t *session, int fd) {
+    if (!session || !session->screen) return;
+    
+    size_t cap = (size_t)session->rows * ((size_t)session->cols + 2) + 64;
+    char *text = malloc(cap);
+    char *out = malloc(cap * 2 + 64);
+    if (!text || !out) {
+        free(text);
+        free(out);
+        return;
+    }
+    
+    size_t n = session_get_screen_text(session, text, cap);
+    /* The text ends with a newline after the last row; drop it so the
+     * redraw does not scroll the client's terminal. */
+    if (n > 0 && text[n - 1] == '\n') n--;
+    
+    size_t pos = 0;
+    memcpy(out, "\x1b[2J\x1b[H", 7);
+    pos = 7;
+    for (size_t i = 0; i < n; i++) {
+        if (text[i] == '\n') out[pos++] = '\r';
+        out[pos++] = text[i];
+    }
+    
+    int row = 0, col = 0;
+    session_get_cursor_position(session, &row, &col);
+    pos += (size_t)snprintf(out + pos, 32, "\x1b[%d;%dH", row + 1, col + 1);
+    
+    session_attach_write(fd, out, pos);
+    free(text);
+    free(out);
+}
+
+
 
 const char* session_manager_create_session_as_user(session_manager_t *mgr,
                                                     const char *command,
@@ -883,13 +1056,18 @@ int session_manager_cleanup_dead_sessions(session_manager_t *mgr) {
                 /* Process exited */
                 log_info("Session process exited: id=%s, pid=%d", session->id, session->pid);
                 session->state = SESSION_STATE_DEAD;
+                /* destroy_session takes mgr->lock itself (non-recursive) */
+                pthread_mutex_unlock(&mgr->lock);
                 session_manager_destroy_session(mgr, session->id);
+                pthread_mutex_lock(&mgr->lock);
                 cleaned++;
             } else if (result < 0 && errno == ECHILD) {
                 /* Process doesn't exist */
                 log_warn("Session process not found: id=%s, pid=%d", session->id, session->pid);
                 session->state = SESSION_STATE_DEAD;
+                pthread_mutex_unlock(&mgr->lock);
                 session_manager_destroy_session(mgr, session->id);
+                pthread_mutex_lock(&mgr->lock);
                 cleaned++;
             }
         }

@@ -117,7 +117,11 @@ pshellctl scrollback <session-id> --start 0 --count 50
 # Expect pattern (timeout in ms is a positional arg, default 5000)
 pshellctl expect <session-id> "password:" 5000
 
-# View the current screen (there is no interactive attach)
+# Open an interactive terminal on the session (Unix socket, no HTTP).
+# Ctrl-] detaches; the session keeps running. Up to 4 terminals per session.
+pshellctl attach <session-id>
+
+# View the current screen (non-interactive snapshot)
 pshellctl screen <session-id>
 
 # Destroy session
@@ -404,7 +408,8 @@ Fast, local control via Unix domain socket:
 pshellctl create --command bash
 pshellctl list
 pshellctl send <id> "echo hello\n"
-pshellctl screen <id>  # View current screen (there is no interactive attach)
+pshellctl screen <id>  # View current screen (snapshot)
+pshellctl attach <id>  # Interactive terminal, Ctrl-] to detach
 ```
 
 **Advantages**:
