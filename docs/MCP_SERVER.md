@@ -64,6 +64,23 @@ The daemon survives MCP client restarts; kill it with `pkill -x pshell` (or `psh
 
 Every tool returns MCP `content` text; failures set `isError: true` with the daemon's message.
 
+## Driving full-screen (TUI) applications
+
+Applications with their own line editor or input widget (Bob Shell, editors, curses menus) treat a burst of bytes arriving in one read as a *paste*. If the text and the Enter key are sent in a single `pshell_send`, the trailing `\r` is inserted as a newline in the input line instead of submitting it.
+
+Send them as **two separate calls**:
+
+1. `pshell_send` with the text (no newline), e.g. `/status`
+2. `pshell_send` with `text: "\r"` and `process_escapes: true`
+
+Other tips:
+
+- `\cU` clears the current input line; `\e` (ESC) closes dialogs and overlays.
+- Use `pshell_screen` (not `pshell_read_output`) to see what a TUI shows now; `pshell_read_output` returns the raw redraw stream.
+- Known limitation: the screen buffer stores one byte per cell and is not UTF-8 aware. Multi-byte characters (box drawing, accents) appear as `�` in `pshell_screen`, and cursor-relative redraws can leave stale fragments. See [TODO.md](../TODO.md).
+
+To watch or type into a session yourself from a local terminal (no HTTP), use `pshellctl attach <session-id>` (`Ctrl-]` detaches).
+
 ## Client configuration
 
 ### opencode

@@ -18,6 +18,11 @@ The current version is defined in [VERSION](VERSION) and `include/pshell/version
 - Daemon segfault (heap overflow) after a session was resized wider: `screen_buffer_resize` kept the scrollback allocated for the old column count, so lines scrolling off a wider screen overflowed it. The scrollback is now rebuilt at the new width (order preserved). Surfaced by `pshellctl attach`, which resizes the session to the attaching terminal; `pshellctl resize` hit the same bug. Regression test in `tests/unit/test_terminal.c` (run under ASAN).
 - Daemon deadlock when a session's process exited: `session_manager_cleanup_dead_sessions` held `mgr->lock` while calling `session_manager_destroy_session`, which locks it again.
 
+### Documentation
+
+- `docs/MCP_SERVER.md`, `docs/ESCAPE_SEQUENCES.md`: driving full-screen (TUI) applications. Send text and `\r` as separate `pshell_send` calls, otherwise the TUI treats the burst as a paste. Documented the screen buffer's lack of UTF-8 support.
+- `docs/MAINTENANCE.md`: `pshellctl attach`. `TODO.md`: UTF-8 screen buffer and attach limitations.
+
 ## [1.2.0] - 2026-10-14
 
 ### Fixed — Critical Memory Corruption & Security (13 bugs)

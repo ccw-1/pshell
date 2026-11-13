@@ -304,6 +304,7 @@ pshellctl send $SESSION '\cC'
 2. **Test Manually**: Try the sequence in a regular terminal first
 3. **Application Support**: Not all applications support all sequences
 4. **Escape Properly**: In JSON, use double backslashes: `"\\cC"`
+5. **Enter Ignored in a TUI**: Full-screen applications treat text plus `\r` sent in one write as a paste and insert a newline instead of submitting. Send the text and `\r` as two separate requests (see [MCP_SERVER.md](MCP_SERVER.md#driving-full-screen-tui-applications)). `\cU` clears the input line.
 
 ### Debugging
 

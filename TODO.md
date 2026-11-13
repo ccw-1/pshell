@@ -158,6 +158,17 @@
   - Solution: Per-context buffers or operation queuing
   - Impact: Medium - limits automation scenarios
 
+- [ ] **UTF-8 aware screen buffer**
+  - Current: `screen_buffer_put_char` stores one byte per cell
+  - Issue: multi-byte characters (box drawing, accents) show as `�` in `pshell_screen`; TUI redraws drift
+  - Solution: decode UTF-8 in the VT100 parser, store code points per cell
+  - Impact: Medium - affects TUI applications (Bob Shell etc.)
+
+- [ ] **`pshellctl attach` limitations**
+  - Output is dropped for a terminal that cannot keep up; max 4 terminals per session
+  - The initial redraw is plain text (no colours/attributes)
+  - Solution: replay recent raw output or render cell attributes on attach
+
 ### Medium Priority
 
 - [ ] **Pattern Matching Performance**

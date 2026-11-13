@@ -264,6 +264,9 @@ pshellctl screen <session-id>
 # Resize terminal
 pshellctl resize <session-id> 30 100
 
+# Interactive terminal on a session (Ctrl-] detaches)
+pshellctl attach <session-id>
+
 # Destroy session
 pshellctl destroy <session-id>
 ```
