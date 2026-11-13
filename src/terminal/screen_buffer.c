@@ -151,9 +151,41 @@ int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
         }
     }
     
+    /* Rebuild the scrollback for the new width. Its rows are `cols` cells
+     * wide, so keeping the old buffer after a resize makes
+     * add_to_scrollback()/get_scrollback_line() index past the allocation
+     * when the screen gets wider. Lines are linearised oldest-first. */
+    char_cell_t *new_scrollback = NULL;
+    int new_sb_pos = 0;
+    if (screen->scrollback_size > 0) {
+        if ((size_t)screen->scrollback_size > SIZE_MAX / (size_t)cols / sizeof(char_cell_t)) {
+            free(new_cells);
+            return -1;
+        }
+        new_scrollback = calloc((size_t)screen->scrollback_size * cols, sizeof(char_cell_t));
+        if (!new_scrollback) {
+            free(new_cells);
+            return -1;
+        }
+        for (int i = 0; i < screen->scrollback_used; i++) {
+            int src = (screen->scrollback_pos - screen->scrollback_used + i +
+                       screen->scrollback_size) % screen->scrollback_size;
+            const char_cell_t *old_line = &screen->scrollback[(size_t)src * screen->cols];
+            char_cell_t *new_line = &new_scrollback[(size_t)i * cols];
+            for (int c = 0; c < copy_cols; c++) {
+                new_line[c] = old_line[c];
+            }
+            for (int c = copy_cols; c < cols; c++) {
+                clear_cell(&new_line[c]);
+            }
+        }
+        new_sb_pos = screen->scrollback_used % screen->scrollback_size;
+    }
+    
     /* Reallocate tab stops */
     bool *new_tabs = calloc(cols, sizeof(bool));
     if (!new_tabs) {
+        free(new_scrollback);
         free(new_cells);
         return -1;
     }
@@ -171,8 +203,11 @@ int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
     /* Replace old buffers */
     free(screen->cells);
     free(screen->tab_stops);
+    free(screen->scrollback);
     screen->cells = new_cells;
     screen->tab_stops = new_tabs;
+    screen->scrollback = new_scrollback;
+    screen->scrollback_pos = new_sb_pos;
     screen->rows = rows;
     screen->cols = cols;
     

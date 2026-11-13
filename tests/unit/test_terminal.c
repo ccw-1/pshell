@@ -326,6 +326,89 @@ void test_screen_buffer_process_sequence(void) {
     PASS();
 }
 
+/* Feed text through the parser into the screen */
+static void feed_text(screen_buffer_t *screen, vt100_parser_t *parser, const char *text) {
+    vt100_sequence_t seq;
+    for (int i = 0; text[i]; i++) {
+        if (vt100_parser_feed(parser, text[i], &seq)) {
+            screen_buffer_process_sequence(screen, &seq);
+        }
+    }
+}
+
+static int scrollback_line_starts(const screen_buffer_t *screen, int idx, const char *prefix) {
+    const char_cell_t *cells = screen_buffer_get_scrollback_line(screen, idx);
+    if (!cells) return 0;
+    for (size_t i = 0; prefix[i]; i++) {
+        if (cells[i].ch != prefix[i]) return 0;
+    }
+    return 1;
+}
+
+/* Regression: widening the screen used to leave the scrollback allocated for
+ * the old width, so later scrolled-off lines overflowed the heap (daemon
+ * segfault after `pshellctl attach` resized the session). Run under ASAN. */
+void test_screen_buffer_resize_scrollback(void) {
+    TEST("screen_buffer_resize_scrollback");
+    
+    screen_buffer_t *screen = screen_buffer_create(5, 10, 20);
+    if (!screen) {
+        FAIL("Failed to create screen buffer");
+    }
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    
+    char buf[32];
+    for (int i = 0; i < 12; i++) {
+        snprintf(buf, sizeof(buf), "L%02d\r\n", i);
+        feed_text(screen, &parser, buf);
+    }
+    int used_before = screen->scrollback_used;
+    if (used_before <= 0 || used_before >= 20) {
+        screen_buffer_destroy(screen);
+        FAIL("Unexpected scrollback_used before resize");
+    }
+    
+    if (screen_buffer_resize(screen, 8, 40) != 0) {
+        screen_buffer_destroy(screen);
+        FAIL("Resize failed");
+    }
+    if (screen->scrollback_used != used_before ||
+        !scrollback_line_starts(screen, 0, "L00")) {
+        screen_buffer_destroy(screen);
+        FAIL("Scrollback content lost or reordered by resize");
+    }
+    
+    /* Wrap the (now wider) scrollback several times */
+    for (int i = 12; i < 100; i++) {
+        snprintf(buf, sizeof(buf), "L%02d\r\n", i);
+        feed_text(screen, &parser, buf);
+    }
+    if (screen->scrollback_used != 20) {
+        screen_buffer_destroy(screen);
+        FAIL("Scrollback should be full");
+    }
+    /* Newest scrolled-off line: 100 lines fed, 8 rows on screen (last row is the empty cursor row) */
+    if (!scrollback_line_starts(screen, 19, "L92")) {
+        screen_buffer_destroy(screen);
+        FAIL("Newest scrollback line wrong");
+    }
+    
+    /* Shrinking must keep order and not overflow either */
+    if (screen_buffer_resize(screen, 4, 6) != 0 ||
+        !scrollback_line_starts(screen, 19, "L92") ||
+        !scrollback_line_starts(screen, 0, "L73")) {
+        screen_buffer_destroy(screen);
+        FAIL("Shrink broke scrollback");
+    }
+    for (int i = 0; i < 50; i++) {
+        feed_text(screen, &parser, "xy\r\n");
+    }
+    
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
 int main(void) {
     printf("=== Terminal Emulation Tests ===\n\n");
     
@@ -341,6 +424,7 @@ int main(void) {
     test_screen_buffer_cursor_movement();
     test_screen_buffer_erase();
     test_screen_buffer_process_sequence();
+    test_screen_buffer_resize_scrollback();
     
     printf("\n=== Results ===\n");
     printf("Passed: %d\n", tests_passed);
