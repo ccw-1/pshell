@@ -120,6 +120,7 @@ static int cmd_create(int argc, char **argv) {
 
     /* Make request */
     http_response_t *resp = http_client_post(g_host, g_port, "/api/sessions", body, g_api_key);
+    free(body);
     if (!resp) {
         fprintf(stderr, "Failed to create session\n");
         return 1;

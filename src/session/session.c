@@ -795,12 +795,9 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     /* Generate session ID */
     char uuid[UUID_STRING_LENGTH];
     if (!uuid_generate(uuid)) {
+        /* Nothing for this slot exists yet: its fields are zero or left over
+         * from an earlier session, so they must not be released here */
         log_error("Failed to generate session ID (is /dev/urandom readable?)");
-        screen_buffer_destroy(session->screen);
-        reap_child_blocking(session->pid);
-        pty_destroy(session->pty);
-        session->pty = NULL;
-        session->screen = NULL;
         return NULL;
     }
     strncpy(session->id, uuid, sizeof(session->id) - 1);
@@ -1704,6 +1701,8 @@ char* session_read_line_range(session_t *session,
                     result_size += chunk_len;
                 }
                 free(chunk);
+            } else {
+                free(chunk);
             }
         }
     }
@@ -1741,6 +1740,8 @@ char* session_read_line_range(session_t *session,
                 result = new_result;
                 memcpy(result + result_size, chunk, chunk_len);
                 result_size += chunk_len;
+                free(chunk);
+            } else {
                 free(chunk);
             }
         }

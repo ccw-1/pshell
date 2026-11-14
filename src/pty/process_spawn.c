@@ -84,7 +84,6 @@ int process_parse_command(const char *command, char **argv, int max_args) {
     
     int argc = 0;
     char *p = cmd;
-    bool in_quote = false;
     char quote_char = '\0';
     char *token_start = NULL;
     
@@ -98,7 +97,6 @@ int process_parse_command(const char *command, char **argv, int max_args) {
         // Handle quoted strings
         if (*p == '"' || *p == '\'') {
             quote_char = *p;
-            in_quote = true;
             token_start = ++p;
             
             while (*p && *p != quote_char) p++;
@@ -108,7 +106,6 @@ int process_parse_command(const char *command, char **argv, int max_args) {
                 argv[argc++] = strdup(token_start);
                 p++;
             }
-            in_quote = false;
         } else {
             // Regular token
             while (*p && !isspace((unsigned char)*p)) p++;

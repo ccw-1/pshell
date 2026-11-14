@@ -478,29 +478,35 @@ void screen_buffer_put_char(screen_buffer_t *screen, char ch) {
     }
 }
 
+/* Clamp a movement count so cursor arithmetic cannot overflow. */
+static int clamp_count(int n, int limit) {
+    if (n < 0) return 0;
+    return n > limit ? limit : n;
+}
+
 void screen_buffer_cursor_up(screen_buffer_t *screen, int n) {
-    screen->cursor.row -= n;
+    screen->cursor.row -= clamp_count(n, screen->rows);
     if (screen->cursor.row < screen->scroll_top) {
         screen->cursor.row = screen->scroll_top;
     }
 }
 
 void screen_buffer_cursor_down(screen_buffer_t *screen, int n) {
-    screen->cursor.row += n;
+    screen->cursor.row += clamp_count(n, screen->rows);
     if (screen->cursor.row > screen->scroll_bottom) {
         screen->cursor.row = screen->scroll_bottom;
     }
 }
 
 void screen_buffer_cursor_forward(screen_buffer_t *screen, int n) {
-    screen->cursor.col += n;
+    screen->cursor.col += clamp_count(n, screen->cols);
     if (screen->cursor.col >= screen->cols) {
         screen->cursor.col = screen->cols - 1;
     }
 }
 
 void screen_buffer_cursor_back(screen_buffer_t *screen, int n) {
-    screen->cursor.col -= n;
+    screen->cursor.col -= clamp_count(n, screen->cols);
     if (screen->cursor.col < 0) {
         screen->cursor.col = 0;
     }
@@ -582,6 +588,7 @@ void screen_buffer_scroll_up(screen_buffer_t *screen, int n) {
     
     int top = screen->scroll_top;
     int bottom = screen->scroll_bottom;
+    n = clamp_count(n, bottom - top + 1);
     
     /* Add top line to scrollback before scrolling */
     if (top == 0) {
@@ -609,6 +616,7 @@ void screen_buffer_scroll_down(screen_buffer_t *screen, int n) {
     
     int top = screen->scroll_top;
     int bottom = screen->scroll_bottom;
+    n = clamp_count(n, bottom - top + 1);
     
     /* Scroll lines down */
     for (int i = 0; i < n; i++) {

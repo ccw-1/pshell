@@ -206,7 +206,13 @@ static json_value_t* parse_object(parser_t *p) {
             return NULL;
         }
 
-        json_object_set(obj, key, val);
+        if (!json_object_set(obj, key, val)) {
+            json_free(val);
+            free(key);
+            json_free(obj);
+            p->depth--;
+            return NULL;
+        }
         free(key);
 
         skip_whitespace(p);
@@ -251,7 +257,12 @@ static json_value_t* parse_array(parser_t *p) {
             return NULL;
         }
 
-        json_array_add(arr, val);
+        if (!json_array_add(arr, val)) {
+            json_free(val);
+            json_free(arr);
+            p->depth--;
+            return NULL;
+        }
 
         skip_whitespace(p);
         if (p->pos < p->len && p->json[p->pos] == ',') {

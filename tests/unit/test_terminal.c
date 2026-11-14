@@ -797,6 +797,25 @@ void test_cluster_pool_limits(void) {
     PASS();
 }
 
+void test_huge_csi_parameters(void) {
+    TEST("huge_csi_parameters");
+    
+    /* Huge counts must neither overflow cursor arithmetic nor loop for ages */
+    screen_buffer_t *screen = screen_buffer_create(5, 10, 5);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "abc\x1b[2147483647B\x1b[2147483647C\x1b[2147483647A\x1b[2147483647D");
+    feed_text(screen, &parser, "\x1b[2000000000S\x1b[2000000000T\x1b[999999999999999999A");
+    feed_text(screen, &parser, "\x1b[2147483647;2147483647H\x1b[2147483647L\x1b[2147483647M");
+    if (screen->cursor.row < 0 || screen->cursor.row >= 5 ||
+        screen->cursor.col < 0 || screen->cursor.col >= 10) {
+        screen_buffer_destroy(screen);
+        FAIL("cursor out of range");
+    }
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
 
 int main(void) {
     printf("=== Terminal Emulation Tests ===\n\n");
@@ -831,6 +850,8 @@ int main(void) {
     test_combining_sequences();
     test_combining_wrap_and_copy();
     test_cluster_pool_limits();
+    /* Robustness */
+    test_huge_csi_parameters();
     
 
     

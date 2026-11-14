@@ -260,7 +260,7 @@
 - [ ] Buffer overflow handling
 - [ ] Multiple sessions
 - [ ] Concurrent operations
-- [ ] Memory leak testing (valgrind)
+- [x] Memory leak testing (valgrind is not installed here; AddressSanitizer + LeakSanitizer + UBSan over unit and integration tests, TSan over the integration tests, plus a parser/screen fuzz harness; all clean)
 - [ ] Performance benchmarks
 - [ ] Edge cases (empty buffer, huge patterns, etc.)
 
@@ -268,7 +268,7 @@
 
 - [x] Makefile builds all binaries
 - [x] No compilation warnings
-- [ ] Static analysis (cppcheck, clang-tidy)
+- [x] Static analysis (cppcheck is not installed; `gcc -fanalyzer` and `clang-tidy -checks=clang-analyzer-*` triaged, real findings fixed)
 - [ ] Code coverage analysis
 - [ ] Performance profiling
 - [ ] Release packaging

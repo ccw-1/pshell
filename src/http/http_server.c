@@ -93,6 +93,8 @@ static void parse_query_string(http_request_t *req, const char *query) {
     free(q);
 }
 
+static void free_request(http_request_t *req);
+
 /* Helper: Parse HTTP request */
 static http_request_t* parse_request(const char *data, size_t len) {
     http_request_t *req = calloc(1, sizeof(http_request_t));
@@ -130,6 +132,11 @@ static http_request_t* parse_request(const char *data, size_t len) {
     }
     
     req->path = strdup(path);
+    if (!req->path) {
+        free(buf);
+        free_request(req);
+        return NULL;
+    }
     
     /* Parse headers */
     while ((line = strtok(NULL, "\r\n")) && *line) {

@@ -226,6 +226,8 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
                      "{\"method\":\"create_session\",\"params\":{\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"scrollback_lines\":%d}}",
                      command, rows, cols, scrollback_lines);
     }
+    free(esc_command_buf);
+    free(esc_output_buf);
     if (n < 0 || (size_t)n >= request_size) {
         fprintf(stderr, "Failed to build request\n");
         free(request);
@@ -234,7 +236,9 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
     
     /* Send request */
     char response[4096];
-    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+    int send_rc = socket_client_send_request(client, request, response, sizeof(response));
+    free(request);
+    if (send_rc < 0) {
         fprintf(stderr, "Failed to send request\n");
         return 1;
     }
