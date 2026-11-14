@@ -97,6 +97,23 @@ max_sessions = 10
         check("send with newline accepted", rc == 0, out)
         ok, scr = wait_screen(sock, sid, "T6X")
         check("plain send still works", ok, scr)
+
+        # expect: a pattern with double quotes works as plain text,
+        # a pre-escaped pattern (\\$ and \") keeps its meaning
+        rc, out = ctl(sock, "send", sid, "echo 'say \"hi\" now'\\n")
+        check("send quoted echo", rc == 0, out)
+        rc, out = ctl(sock, "expect", sid, 'say "hi" now', "4000")
+        check("expect pattern with quotes", rc == 0 and "Matched" in out, out)
+        rc, out = ctl(sock, "expect-incoming", sid, 'nothing "here"', "300")
+        check("expect-incoming with quotes: clean no-match", rc == 1 and "No match" in out, out)
+        rc, out = ctl(sock, "send", sid, "echo 'cost $5'\\n")
+        rc, out = ctl(sock, "expect", sid, 'cost \\\\$5', "4000")
+        check("expect pre-escaped \\\\$ keeps its meaning", rc == 0 and "Matched" in out, out)
+        rc, out = ctl(sock, "expect", sid, 'say \\"hi\\" now', "4000")
+        check("expect pre-escaped quotes", rc == 0 and "Matched" in out, out)
+        long_pat = "x" * 3000 + '"y"'
+        rc, out = ctl(sock, "expect-incoming", sid, long_pat, "300")
+        check("long pattern is not truncated", rc == 1 and "No match" in out, out)
     finally:
         daemon.terminate()
         try:

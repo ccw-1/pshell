@@ -2,7 +2,8 @@
  * Build and run:
  *   cc -fsanitize=address,undefined -fno-sanitize-recover=undefined -g -O1 -Iinclude \
  *      -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE tests/fuzz/fuzz_terminal.c \
- *      src/terminal/*.c src/utils/logger.c -o /tmp/fuzz_terminal -pthread
+ *      src/terminal/screen_buffer.c src/terminal/vt100_parser.c src/terminal/utf8.c \
+ *      src/utils/logger.c -o /tmp/fuzz_terminal -pthread
  *   /tmp/fuzz_terminal 50000
  */
 #include "pshell/vt100_parser.h"
@@ -32,13 +33,13 @@ int main(int argc, char **argv) {
             switch (rnd() % 8) {
               case 0: case 1: buf[len++] = 'a' + rnd() % 26; break;
               case 2: buf[len++] = (char)(rnd() % 256); break;
-              case 3: { const char *u[] = {"\xc3\xa9","\xcc\x81","\xe6\x97\xa5","\xf0\x9f\x91\x8d","\xf0\x9f\x8f\xbd","\xe2\x80\x8d","\xef\xb8\x8f","\xf0\x9f\x91\xa8"}; const char *x=u[rnd()%8]; len = strlen(x); memcpy(buf,x,len);} break;
+              case 3: { const char *u[] = {"\xc3\xa9","\xcc\x81","\xe6\x97\xa5","\xf0\x9f\x91\x8d","\xf0\x9f\x8f\xbd","\xe2\x80\x8d","\xef\xb8\x8f","\xf0\x9f\x91\xa8","\xe2\x9d\xa4","\xf0\x9f\x87\xa9","\xe1\x84\x92","\xe1\x85\xa1"}; const char *x=u[rnd()%12]; len = strlen(x); memcpy(buf,x,len);} break;
               case 4: buf[len++] = "\r\n\t\b\x07\x0b\x0c"[rnd()%7]; break;
               default: {
                 len += snprintf(buf+len, sizeof buf-len, "\x1b[");
                 if (rnd()%4==0) buf[len++]='?';
                 int np = rnd()%7;
-                for (int k=0;k<np;k++){ len += snprintf(buf+len, sizeof buf-len, "%s%s", k?";":"", big[rnd()%14]); }
+                for (int k=0;k<np;k++){ len += snprintf(buf+len, sizeof buf-len, "%s%s", k?((rnd()%3)==0?":":";"):"", big[rnd()%14]); }
                 buf[len++] = fin[rnd()%strlen(fin)];
               }
             }

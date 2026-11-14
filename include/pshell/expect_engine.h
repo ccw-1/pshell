@@ -37,8 +37,8 @@ typedef struct {
     time_t start_time;              /* Start time for timeout */
     int timeout_ms;                 /* Timeout in milliseconds */
     expect_flags_t flags;           /* Expect flags (seeding, etc.) */
-    session_line_no_t snapshot_line; /* Session line snapshot taken when expect starts */
-    size_t snapshot_offset;         /* Byte offset within snapshot_line when expect starts */
+    uint64_t read_pos;              /* Position in the session's expect window of the next unread byte */
+    bool attached;                  /* Attached to the session's expect window */
     volatile bool cancelled;        /* Cancellation flag (set when client disconnects) */
     bool (*cancel_check)(void *user_data); /* Optional extra cancellation probe */
     void *cancel_user_data;         /* User data for cancel_check */

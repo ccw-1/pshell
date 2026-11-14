@@ -265,6 +265,43 @@ size_t str_json_escape(char *dst, size_t dst_cap, const char *src) {
     return pos;
 }
 
+size_t str_json_escape_pattern(char *dst, size_t dst_cap, const char *src) {
+    if (!dst || dst_cap == 0) return 0;
+    if (!src) src = "";
+    size_t pos = 0;
+    for (const unsigned char *c = (const unsigned char *)src; *c; c++) {
+        char esc[8];
+        size_t n;
+        if (*c == '\\' && c[1] >= 0x20) {
+            /* Keep the pair: it is already a JSON escape (or an unknown one the parser drops) */
+            esc[0] = '\\';
+            esc[1] = (char)c[1];
+            n = 2;
+            c++;
+        } else if (*c == '\\') {
+            memcpy(esc, "\\\\", 2); n = 2;
+        } else if (*c == '"') {
+            memcpy(esc, "\\\"", 2); n = 2;
+        } else if (*c == '\n') {
+            memcpy(esc, "\\n", 2); n = 2;
+        } else if (*c == '\r') {
+            memcpy(esc, "\\r", 2); n = 2;
+        } else if (*c == '\t') {
+            memcpy(esc, "\\t", 2); n = 2;
+        } else if (*c < 0x20) {
+            n = (size_t)snprintf(esc, sizeof(esc), "\\u%04x", *c);
+        } else {
+            esc[0] = (char)*c;
+            n = 1;
+        }
+        if (pos + n > dst_cap - 1) break;
+        memcpy(dst + pos, esc, n);
+        pos += n;
+    }
+    dst[pos] = '\0';
+    return pos;
+}
+
 /* Bounded single-byte write for str_unescape: never writes past dst_end
  * (the byte reserved for the terminating NUL). */
 #define PUTC(c) do { if (dst < dst_end) { *dst++ = (char)(c); } } while (0)

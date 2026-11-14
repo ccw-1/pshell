@@ -180,4 +180,13 @@ size_t str_unescape(char *dst, size_t dst_cap, const char *src);
  */
 size_t str_json_escape(char *dst, size_t dst_cap, const char *src);
 
+/**
+ * Like str_json_escape(), but backslash pairs are kept as they are, so a
+ * pattern that is already JSON-escaped (`\\$ `, `\"`) keeps its meaning. Only
+ * a `"` that is not preceded by a backslash, control characters and a
+ * trailing or control-character-preceding lone backslash are escaped.
+ * Same buffer rules and return value as str_json_escape().
+ */
+size_t str_json_escape_pattern(char *dst, size_t dst_cap, const char *src);
+
 #endif /* PSHELL_STRING_UTILS_H */

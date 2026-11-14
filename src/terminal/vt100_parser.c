@@ -17,6 +17,7 @@ static void reset_sequence(vt100_parser_t *parser) {
     memset(&parser->current_seq, 0, sizeof(parser->current_seq));
     parser->param_count = 0;
     parser->current_param = 0;
+    parser->colon_mask = 0;
     parser->private_mode = false;
     parser->osc_len = 0;
 }
@@ -73,6 +74,12 @@ static bool finalize_csi(vt100_parser_t *parser, char final_char, vt100_sequence
     seq->final_char = final_char;
     seq->private_mode = parser->private_mode;
     seq->param_count = parser->param_count;
+    seq->colon_mask = parser->colon_mask;
+    
+    /* Colon sub-parameters only have a meaning in SGR */
+    if (parser->colon_mask && final_char != 'm') {
+        seq->type = VT100_SEQ_UNKNOWN;
+    }
     
     /* Copy parameters */
     for (int i = 0; i < parser->param_count && i < VT100_MAX_PARAMS; i++) {
@@ -239,6 +246,16 @@ bool vt100_parser_feed(vt100_parser_t *parser, char ch, vt100_sequence_t *seq) {
                 if (parser->param_count < VT100_MAX_PARAMS) {
                     parser->params[parser->param_count++] = parser->current_param;
                     parser->current_param = 0;
+                }
+                return false;
+            } else if (ch == ':') {
+                /* Sub-parameter separator (38:2::r:g:b, 4:3) */
+                if (parser->param_count < VT100_MAX_PARAMS) {
+                    parser->params[parser->param_count++] = parser->current_param;
+                    parser->current_param = 0;
+                    if (parser->param_count < VT100_MAX_PARAMS) {
+                        parser->colon_mask |= 1u << parser->param_count;
+                    }
                 }
                 return false;
             } else if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {

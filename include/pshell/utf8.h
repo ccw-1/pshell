@@ -28,4 +28,13 @@ size_t utf8_encode(uint32_t cp, char *out);
  */
 int utf8_cp_width(uint32_t cp);
 
+/**
+ * Non-zero for narrow characters that become 2-column emoji when followed by
+ * U+FE0F (the emoji variation selector): U+2764, U+2600, U+00A9, ...
+ */
+int utf8_is_emoji_vs_base(uint32_t cp);
+
+/** Non-zero for regional indicators U+1F1E6..U+1F1FF (two of them form a flag) */
+int utf8_is_regional_indicator(uint32_t cp);
+
 #endif /* PSHELL_UTF8_H */

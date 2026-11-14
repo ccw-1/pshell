@@ -116,6 +116,9 @@ pshellctl scrollback <session-id> --start 0 --count 50
 
 # Expect pattern (timeout in ms is a positional arg, default 5000)
 pshellctl expect <session-id> "password:" 5000
+# The pattern is a POSIX extended regex written as JSON string text: `"` and control
+# characters are escaped for you, backslash pairs are kept (`"\\$ "` = regex `\$ `).
+# Up to 16 expects can wait on one session at the same time.
 
 # Open an interactive terminal on the session (Unix socket, no HTTP).
 # Ctrl-] detaches; the session keeps running. Up to `[sessions] max_attach` (default 16) terminals per session.

@@ -547,12 +547,11 @@ static void handle_expect_pattern(http_request_t *req, http_response_t *resp, vo
         return;
     }
     
-    /* One expect per session: the expect buffer is shared, and a second
-     * concurrent expect would interleave reads into the same buffer. */
-    if (session_expect_active(session)) {
+    /* Several expects may run at once on a session; bound them */
+    if (session_expect_count(session) >= SESSION_MAX_EXPECTS) {
         json_free(json);
         free(session_id);
-        http_response_send_error(resp, HTTP_STATUS_CONFLICT, "Expect already in progress for this session");
+        http_response_send_error(resp, HTTP_STATUS_CONFLICT, "Too many concurrent expects for this session");
         return;
     }
     

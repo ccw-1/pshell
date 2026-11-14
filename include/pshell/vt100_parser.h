@@ -56,6 +56,7 @@ typedef struct {
     vt100_seq_type_t type;
     int params[VT100_MAX_PARAMS];
     int param_count;
+    unsigned colon_mask;     /* Bit i set: params[i] followed a ':' (sub-parameter of params[i-1]) */
     char final_char;         /* Final character of CSI sequence */
     bool private_mode;       /* CSI sequence starts with ? */
     char text[256];          /* For printable text or OSC strings */
@@ -69,6 +70,7 @@ typedef struct {
     int params[VT100_MAX_PARAMS];
     int param_count;
     int current_param;
+    unsigned colon_mask;
     bool private_mode;
     char osc_buffer[256];
     size_t osc_len;

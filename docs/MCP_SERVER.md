@@ -134,7 +134,7 @@ Exercises initialize, `tools/list`, all twelve tools, error paths and the auto-s
 ## Daemon notes
 
 - **`expect` runs asynchronously.** The daemon runs the wait on a detached worker thread, so the event loop keeps reading PTYs while an expect is pending — output produced during the wait is matched (previously it was lost and the call timed out). The client connection is kept open by the worker; if the client disconnects, the wait is cancelled and the daemon stays responsive. Consequences:
-  - one expect per session at a time (a second one is rejected with `Expect already in progress for this session`)
+  - up to 16 expects can wait on one session at the same time (each reads the output from its own start point; more are rejected with `Too many concurrent expects for this session`)
   - `pshell_destroy_session` is refused while an expect is active (protects the worker); retry after the expect returns
 - **`pshell_read_lines`** needs sessions created with `output_file` (the line counter is only maintained for output logging). Log data is buffered until a read flushes it, so `tail`/`head`/range reads see everything available.
 - **`pshell_scrollback`** returns an empty note until lines scroll off the visible screen; use `pshell_screen` for live output.

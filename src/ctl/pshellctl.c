@@ -46,6 +46,16 @@ static char *json_escape_dup(const char *s) {
     return out;
 }
 
+/* Return a malloc'd copy of a pattern escaped for a JSON string. Backslash pairs
+ * are kept (patterns have always been passed as JSON string text, e.g. "\\$ "),
+ * so only quotes and control characters are escaped. */
+static char *json_escape_pattern_dup(const char *s) {
+    size_t cap = strlen(s) * 6 + 1;
+    char *out = malloc(cap);
+    if (out) str_json_escape_pattern(out, cap, s);
+    return out;
+}
+
 /* Forward declarations */
 static void print_usage(const char *prog);
 static int cmd_create(socket_client_t *client, int argc, char **argv);
@@ -1026,14 +1036,28 @@ static int cmd_expect_incoming(socket_client_t *client, int argc, char **argv) {
     int timeout = atoi(argv[2]);
     
     /* Build request */
-    char request[4096];
-    snprintf(request, sizeof(request),
+    char *esc_pattern = json_escape_pattern_dup(pattern);
+    if (!esc_pattern) {
+        fprintf(stderr, "Out of memory\n");
+        return 1;
+    }
+    size_t request_size = strlen(esc_pattern) + strlen(session_id) + 256;
+    char *request = malloc(request_size);
+    if (!request) {
+        free(esc_pattern);
+        fprintf(stderr, "Out of memory\n");
+        return 1;
+    }
+    snprintf(request, request_size,
             "{\"method\":\"expect_pattern_incoming\",\"params\":{\"session_id\":\"%s\",\"pattern\":\"%s\",\"timeout\":%d,\"case_sensitive\":true}}",
-            session_id, pattern, timeout);
+            session_id, esc_pattern, timeout);
+    free(esc_pattern);
     
     /* Send request */
     char response[8192];
-    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+    int sent = socket_client_send_request(client, request, response, sizeof(response));
+    free(request);
+    if (sent < 0) {
         fprintf(stderr, "Failed to send request\n");
         return 1;
     }
@@ -1094,14 +1118,28 @@ static int cmd_expect(socket_client_t *client, int argc, char **argv) {
     }
     
     /* Build request */
-    char request[1024];
-    snprintf(request, sizeof(request),
+    char *esc_pattern = json_escape_pattern_dup(pattern);
+    if (!esc_pattern) {
+        fprintf(stderr, "Out of memory\n");
+        return 1;
+    }
+    size_t request_size = strlen(esc_pattern) + strlen(session_id) + 256;
+    char *request = malloc(request_size);
+    if (!request) {
+        free(esc_pattern);
+        fprintf(stderr, "Out of memory\n");
+        return 1;
+    }
+    snprintf(request, request_size,
              "{\"method\":\"expect_pattern\",\"params\":{\"id\":\"%s\",\"pattern\":\"%s\",\"timeout\":%d}}",
-             session_id, pattern, timeout);
+             session_id, esc_pattern, timeout);
+    free(esc_pattern);
     
     /* Send request */
     char response[8192];
-    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+    int sent = socket_client_send_request(client, request, response, sizeof(response));
+    free(request);
+    if (sent < 0) {
         fprintf(stderr, "Failed to send request\n");
         return 1;
     }

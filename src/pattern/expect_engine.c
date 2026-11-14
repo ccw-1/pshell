@@ -32,8 +32,6 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms, expe
     ctx->timeout_ms = timeout_ms;
     ctx->start_time = get_time_ms();
     ctx->flags = flags;
-    ctx->snapshot_line = session_get_current_line_no(session);
-    ctx->snapshot_offset = 0;
     
     /* Allocate buffer */
     ctx->buffer_size = EXPECT_BUFFER_SIZE;
@@ -50,35 +48,23 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms, expe
     ctx->cancel_check = NULL;
     ctx->cancel_user_data = NULL;
     
-    /* Activate expect buffer in session */
-    bool skip_seeding = (flags & EXPECT_FLAG_SKIP_SEEDING) != 0;
-    if (session_start_expect(session, skip_seeding) < 0) {
-        log_error("Failed to start expect buffer");
+    /* Attach to the session: from here on its output is kept for this expect */
+    if (session_expect_attach(session, &ctx->read_pos) < 0) {
+        log_error("Failed to attach expect to session");
         free(ctx->buffer);
         free(ctx);
         return NULL;
     }
+    ctx->attached = true;
     
-    /* Conditionally seed buffer based on flags */
+    /* Unless incoming-only, start from what is on the screen now. The screen
+     * is read after attaching, so output that arrives in between is seen twice
+     * rather than missed. */
     if (!(flags & EXPECT_FLAG_SKIP_SEEDING)) {
-        /* Read seeded data from session's expect buffer into context buffer */
-        ssize_t seeded = session_read_expect_output(session, ctx->buffer, ctx->buffer_size - 1,
-                                                    1, 0, NULL, NULL);
-        if (seeded > 0) {
-            ctx->buffer[seeded] = '\0';
-            ctx->buffer_used = seeded;
-            log_debug("Loaded %zd bytes of seeded data into expect context", seeded);
-        }
-    } else {
-        session_line_no_t current_line = 1;
-        size_t current_offset = 0;
-        (void)session_read_expect_output(session, ctx->buffer, 0,
-                                         ctx->snapshot_line, ctx->snapshot_offset,
-                                         &current_line, &current_offset);
-        ctx->snapshot_line = current_line;
-        ctx->snapshot_offset = current_offset;
-        log_debug("Incoming-only mode: snapshot line=%lu offset=%zu",
-                  (unsigned long)ctx->snapshot_line, ctx->snapshot_offset);
+        size_t n = session_get_screen_text(session, ctx->buffer, ctx->buffer_size - 1);
+        ctx->buffer[n] = '\0';
+        ctx->buffer_used = n;
+        log_debug("Seeded expect context with %zu bytes from the screen", n);
     }
     
     log_debug("Created expect context: timeout=%dms, flags=0x%x", timeout_ms, flags);
@@ -89,9 +75,9 @@ expect_context_t *expect_context_create(session_t *session, int timeout_ms, expe
 void expect_context_destroy(expect_context_t *ctx) {
     if (!ctx) return;
     
-    /* Deactivate expect buffer in session */
-    if (ctx->session) {
-        session_stop_expect(ctx->session);
+    /* Detach from the session (frees its expect window with the last expect) */
+    if (ctx->session && ctx->attached) {
+        session_expect_detach(ctx->session);
     }
     
     free(ctx->buffer);
@@ -197,14 +183,9 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
             return EXPECT_MATCHED;
         }
         
-        /* Read accumulated expect output */
+        /* Read newly arrived output */
         char read_buf[EXPECT_READ_SIZE];
-        session_line_no_t next_line = ctx->snapshot_line;
-        size_t next_offset = ctx->snapshot_offset;
-        ssize_t n = session_read_expect_output(ctx->session, read_buf, sizeof(read_buf) - 1,
-                                               (ctx->flags & EXPECT_FLAG_SKIP_SEEDING) ? ctx->snapshot_line : 1,
-                                               (ctx->flags & EXPECT_FLAG_SKIP_SEEDING) ? ctx->snapshot_offset : 0,
-                                               &next_line, &next_offset);
+        ssize_t n = session_expect_read(ctx->session, &ctx->read_pos, read_buf, sizeof(read_buf) - 1);
         
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -236,11 +217,6 @@ expect_result_t expect_pattern(expect_context_t *ctx, const char *pattern,
         
         log_debug("Read %zd bytes from expect buffer: '%.50s%s'", 
                   n, read_buf, n > 50 ? "..." : "");
-        
-        if (ctx->flags & EXPECT_FLAG_SKIP_SEEDING) {
-            ctx->snapshot_line = next_line;
-            ctx->snapshot_offset = next_offset;
-        }
         
         /* Got data, reset backoff */
         sleep_us = 10000;
@@ -346,10 +322,7 @@ expect_result_t expect_any(expect_context_t *ctx, const char **patterns,
         
         /* Read more output */
         char read_buf[EXPECT_READ_SIZE];
-        session_line_no_t next_line = ctx->snapshot_line;
-        size_t next_offset = ctx->snapshot_offset;
-        ssize_t n = session_read_expect_output(ctx->session, read_buf, sizeof(read_buf) - 1,
-                                               1, 0, &next_line, &next_offset);
+        ssize_t n = session_expect_read(ctx->session, &ctx->read_pos, read_buf, sizeof(read_buf) - 1);
         
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {

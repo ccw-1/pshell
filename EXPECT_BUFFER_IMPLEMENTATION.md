@@ -1,5 +1,13 @@
 # Expect Buffer Implementation
 
+> **Superseded (2026-11).** The single, linear expect buffer described below (an `expect_active` flag,
+> data dropped when the 64 KB buffer was full, line/offset snapshots) was replaced by a sliding window:
+> `session_expect_attach()`/`session_expect_detach()`/`session_expect_read()` (`session.c`). The session keeps the
+> last `SESSION_EXPECT_WINDOW` (256 KB) of PTY output while at least one expect is attached (oldest half dropped
+> when full, `expect_base` = stream offset of the first byte), each expect has its own absolute `read_pos`,
+> up to `SESSION_MAX_EXPECTS` (16) expects can run at once, and the window is freed with the last one.
+> Seeding copies the screen text into the expect context. The text below is kept for history.
+
 ## Overview
 
 The expect buffer is a dedicated accumulation buffer that solves the data loss problem when expect operations compete with other consumers of PTY output.

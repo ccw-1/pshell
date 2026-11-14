@@ -821,15 +821,17 @@ static void handle_expect_common(socket_connection_t *conn, json_value_t *params
         return;
     }
     
-    /* One expect per session: the expect buffer is shared, and session
-     * destruction is refused while an expect is active. */
-    if (session_expect_active(session)) {
-        send_error(conn, "Expect already in progress for this session");
+    /* Several expects may run at once on a session (each keeps its own read
+     * position); bound them so worker threads cannot pile up. Session
+     * destruction is refused while any expect is active. */
+    if (session_expect_count(session) >= SESSION_MAX_EXPECTS) {
+        send_error(conn, "Too many concurrent expects for this session");
         return;
     }
     
-    /* Create expect context (seeds from the screen, or clears for incoming-only).
-     * Runs on the event loop thread; activation is what guards the session. */
+    /* Create expect context (seeds from the screen, or starts at the end of the
+     * output for incoming-only). Runs on the event loop thread; attaching is what
+     * guards the session. */
     expect_context_t *ctx = expect_context_create(session, timeout,
                                                   incoming_only ? EXPECT_FLAG_SKIP_SEEDING
                                                                 : EXPECT_FLAG_NONE);

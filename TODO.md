@@ -140,40 +140,22 @@
 
 ### High Priority
 
-- [ ] **Buffer Size Management**
-  - Current: Fixed 64KB expect buffer
-  - Issue: May lose old data if buffer fills
-  - Solution: Implement dynamic buffer expansion or configurable size
-  - Impact: Medium - affects long-running expect operations
-
 - [ ] **Line Position Accuracy**
   - Current: Counts newlines in buffer
   - Issue: VT100 escape sequences affect line counting
   - Solution: Use screen buffer line tracking instead
   - Impact: Low - line position is informational
 
-- [ ] **Multiple Concurrent Expects**
-  - Current: One expect per session
-  - Issue: Cannot run multiple expect operations simultaneously
-  - Solution: Per-context buffers or operation queuing
-  - Impact: Medium - limits automation scenarios
-
 - [ ] **Screen buffer: grapheme cluster widths**
   - Combining marks, ZWJ sequences and skin tone modifiers are kept with their base character (cluster pool, max 8 code points, 4096 distinct clusters per screen; beyond that the extra marks are dropped)
-  - Not done: variation selector U+FE0F does not widen a narrow base to 2 columns; regional indicator pairs (flags) take 2 cells; Hangul jamo sequences are not composed
+  - U+FE0F widens a narrow base from a fixed emoji table (`utf8_is_emoji_vs_base`), flags are one 2-column cluster, Hangul jamo attach to the leading jamo (width tables are hand-maintained, not generated from Unicode data)
+  - Not done: keycap sequences (`1` U+FE0F U+20E3), FE0F in the last column, tag sequences (subdivision flags)
   - `get_scrollback` lines are limited to 4096 bytes per line
-  - Impact: Low
-
-- [ ] **`pshellctl expect` / `expect-incoming` do not JSON-escape the pattern**
-  - Current: the pattern is pasted into the request as is; docs/scripts pass pre-escaped patterns (`"\\$ "`)
-  - Issue: a pattern with `"` fails; escaping now would change the meaning of pre-escaped patterns
-  - Solution: escape in the client and document that patterns are plain regex text (breaking for existing scripts)
   - Impact: Low
 
 - [ ] **`pshellctl attach` limitations**
   - Output is dropped for a terminal that cannot keep up; limit is `[sessions] max_attach` (default 16)
   - The initial redraw has colours and attributes, but not the terminal modes of the program (alternate screen, cursor visibility, mouse/paste modes)
-  - Colon-separated SGR parameters (`38:2::r:g:b`) are not parsed by the VT100 parser (the sequence is dropped); `;` forms work
 
 ### Medium Priority
 
@@ -182,12 +164,6 @@
   - Issue: Slow for large buffers (64KB)
   - Solution: Implement Boyer-Moore or incremental matching
   - Impact: Low - only affects large buffer searches
-
-- [ ] **Memory Management**
-  - Current: Expect buffer kept until session destruction
-  - Issue: Memory not freed after expect completes
-  - Solution: Free buffer after inactivity period
-  - Impact: Low - 64KB per session is acceptable
 
 - [ ] **Timeout Precision**
   - Current: 10ms polling with usleep()

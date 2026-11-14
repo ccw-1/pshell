@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <time.h>
 #include "io_multiplexer.h"
@@ -275,33 +276,36 @@ size_t session_peek_raw_output(const session_t *session, char *buffer, size_t si
  * @param session Session
  */
 
+/* Expect window: the most recent PTY output kept while expects are attached
+ * (oldest half dropped when full) and the number of concurrent expects per session */
+#define SESSION_EXPECT_WINDOW (256 * 1024)
+#define SESSION_MAX_EXPECTS 16
+
 /**
- * Start expect operation - allocate and activate expect buffer
+ * Attach an expect operation to the session: the expect window is allocated
+ * on first use. Several expects can be attached at once.
  * @param session Session
- * @param skip_seeding If true, don't seed buffer from screen (incoming-only mode)
- * @return 0 on success, -1 on error
+ * @param start_pos Output stream position of the end of the output so far
+ *        (where an incoming-only expect starts reading)
+ * @return 0 on success, -1 on error (errno EBUSY: SESSION_MAX_EXPECTS reached)
  */
-int session_start_expect(session_t *session, bool skip_seeding);
+int session_expect_attach(session_t *session, uint64_t *start_pos);
+
+/**
+ * Detach an expect operation; the window is freed with the last one.
+ */
+void session_expect_detach(session_t *session);
 
 /**
  * Check whether an expect operation is currently active on this session
  * (thread-safe)
- * @param session Session
- * @return true if an expect is in progress
  */
 bool session_expect_active(session_t *session);
 
 /**
- * Stop expect operation - deactivate expect buffer
- * @param session Session
+ * Number of expect operations attached to the session (thread-safe)
  */
-void session_stop_expect(session_t *session);
-
-/**
- * Clear expect buffer contents
- * @param session Session
- */
-void session_clear_expect_buffer(session_t *session);
+int session_expect_count(session_t *session);
 
 /**
  * Get the current monotonic line counter for the session.
@@ -312,21 +316,15 @@ void session_clear_expect_buffer(session_t *session);
 session_line_no_t session_get_current_line_no(const session_t *session);
 
 /**
- * Read from expect buffer (non-destructive peek)
+ * Read from the expect window (non-destructive peek)
  * @param session Session
+ * @param pos In/out stream position to read from; advanced by the bytes read.
+ *        A position older than the window is moved to its start.
  * @param buffer Output buffer
  * @param size Maximum bytes to read
- * @param start_line Exclusive lower bound for incoming-only reads; only data from
- *        lines greater than this snapshot line is returned, plus partial data that
- *        arrives on the snapshot line after the snapshot byte offset.
- * @param start_offset Byte offset within start_line for partial-line incoming reads
- * @param next_line Output current line snapshot after the read (optional)
- * @param next_offset Output current byte offset within the current line after the read (optional)
- * @return Number of bytes read
+ * @return Bytes read (0 = nothing new), -1 if no expect is attached
  */
-ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size,
-                                   session_line_no_t start_line, size_t start_offset,
-                                   session_line_no_t *next_line, size_t *next_offset);
+ssize_t session_expect_read(session_t *session, uint64_t *pos, char *buffer, size_t size);
 
 void session_clear_raw_buffer(session_t *session);
 

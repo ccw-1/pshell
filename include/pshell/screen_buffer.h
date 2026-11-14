@@ -285,6 +285,11 @@ void screen_buffer_scroll_down(screen_buffer_t *screen, int n);
  */
 void screen_buffer_set_sgr(screen_buffer_t *screen, const int *params, int count);
 
+/* Same, with colon sub-parameters: bit i of colon_mask set = params[i] is a
+ * sub-parameter of params[i-1] (38:2::r:g:b, 38:5:n, 4:3). */
+void screen_buffer_set_sgr_ex(screen_buffer_t *screen, const int *params, int count,
+                              unsigned colon_mask);
+
 /** True if two attribute sets are identical */
 bool screen_buffer_attr_equal(const char_attr_t *a, const char_attr_t *b);
 

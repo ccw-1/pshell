@@ -90,11 +90,14 @@ struct session {
     session_attach_t *attach;
     int max_attach;
 
-    /* Expect buffer (active only during expect operations) */
+    /* Expect window: the most recent PTY output, kept while at least one
+     * expect operation is attached. expect_base is the stream offset of
+     * expect_buffer[0]; each expect keeps its own absolute read position. */
     char *expect_buffer;
     size_t expect_buffer_size;
     size_t expect_buffer_used;
-    bool expect_active;
+    uint64_t expect_base;
+    int expect_refs;
     session_line_no_t current_line_no;
     size_t current_line_offset;
     /* Serializes expect buffer/line state between the event loop (writer,
@@ -218,7 +221,8 @@ static void session_free_resources(session_t *session) {
     session->expect_buffer = NULL;
     session->expect_buffer_size = 0;
     session->expect_buffer_used = 0;
-    session->expect_active = false;
+    session->expect_base = 0;
+    session->expect_refs = 0;
     pthread_mutex_unlock(&session->expect_lock);
     
     /* Reset line-tracking state so a reused slot starts clean */
@@ -546,23 +550,26 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                 }
             }
             
-            /* Also write to expect buffer if expect is active.
-             * Locked: the expect worker thread reads this buffer while the
-             * event loop (this callback) appends to it. */
-            if (session->expect_active && session->expect_buffer) {
-                size_t before = session->expect_buffer_used;
-                for (ssize_t i = 0; i < n; i++) {
-                    if (session->expect_buffer_used < session->expect_buffer_size) {
-                        session->expect_buffer[session->expect_buffer_used++] = buffer[i];
+            /* Also append to the expect window while an expect is attached.
+             * Locked: expect worker threads read this buffer while the event
+             * loop (this callback) appends to it. When the window is full the
+             * oldest half is dropped (expect_base advances accordingly). */
+            if (session->expect_refs > 0 && session->expect_buffer) {
+                size_t off = 0;
+                while (off < (size_t)n) {
+                    if (session->expect_buffer_used == session->expect_buffer_size) {
+                        size_t shift = session->expect_buffer_size / 2;
+                        memmove(session->expect_buffer, session->expect_buffer + shift,
+                                session->expect_buffer_used - shift);
+                        session->expect_buffer_used -= shift;
+                        session->expect_base += shift;
                     }
+                    size_t room = session->expect_buffer_size - session->expect_buffer_used;
+                    size_t chunk = (size_t)n - off < room ? (size_t)n - off : room;
+                    memcpy(session->expect_buffer + session->expect_buffer_used, buffer + off, chunk);
+                    session->expect_buffer_used += chunk;
+                    off += chunk;
                 }
-                log_debug("PTY callback: wrote %zu bytes to expect_buffer (was %zu, now %zu), line=%lu offset=%zu",
-                          session->expect_buffer_used - before, before, session->expect_buffer_used,
-                          (unsigned long)session->current_line_no, session->current_line_offset);
-            } else {
-                log_debug("PTY callback: NOT writing to expect_buffer (active=%d, buffer=%p), line=%lu offset=%zu",
-                          session->expect_active, (void*)session->expect_buffer,
-                          (unsigned long)session->current_line_no, session->current_line_offset);
             }
             pthread_mutex_unlock(&session->expect_lock);
             
@@ -895,6 +902,8 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     session->current_line_offset = 0;
     session->file_map_count = 0;
     session->expect_buffer_used = 0;
+    session->expect_base = 0;
+    session->expect_refs = 0;
     
     /* Initialize session state */
     session->state = SESSION_STATE_ACTIVE;
@@ -1176,9 +1185,10 @@ ssize_t session_send_input(session_t *session, const char *data, size_t len) {
 ssize_t session_read_output(session_t *session, char *buffer, size_t size) {
     if (!session || !buffer || size == 0) return -1;
     
-    /* If expect is active, read from expect buffer instead */
-    if (session->expect_active) {
-        return session_read_expect_output(session, buffer, size, 1, 0, NULL, NULL);
+    /* If an expect is active, peek the expect window instead (from its start) */
+    if (session_expect_active(session)) {
+        uint64_t pos = 0;
+        return session_expect_read(session, &pos, buffer, size);
     }
     
     if (!session->raw_buffer) {
@@ -1370,122 +1380,77 @@ size_t session_peek_raw_output(const session_t *session, char *buffer, size_t si
 }
 
 /**
- * Start expect operation - allocate and activate expect buffer
- * @param session Session
- * @return 0 on success, -1 on error
+ * Attach an expect operation: allocates the expect window on first use and
+ * returns the current end of the stream, where the new expect starts reading.
  */
-int session_start_expect(session_t *session, bool skip_seeding) {
-    if (!session) {
+int session_expect_attach(session_t *session, uint64_t *start_pos) {
+    if (!session || !start_pos) {
         return -1;
     }
     
-    /* Already active */
-    if (session_expect_active(session)) {
-        return 0;
+    pthread_mutex_lock(&session->expect_lock);
+    if (session->expect_refs >= SESSION_MAX_EXPECTS) {
+        pthread_mutex_unlock(&session->expect_lock);
+        errno = EBUSY;
+        return -1;
     }
-    
-    /* Allocate expect buffer if not already allocated */
     if (!session->expect_buffer) {
-        session->expect_buffer_size = RAW_BUFFER_SIZE;  /* Same size as raw buffer */
-        session->expect_buffer = malloc(session->expect_buffer_size);
+        session->expect_buffer = malloc(SESSION_EXPECT_WINDOW);
         if (!session->expect_buffer) {
-            log_error("Failed to allocate expect buffer");
+            pthread_mutex_unlock(&session->expect_lock);
+            log_error("Failed to allocate expect window");
             return -1;
         }
+        session->expect_buffer_size = SESSION_EXPECT_WINDOW;
+        session->expect_buffer_used = 0;
+        session->expect_base = 0;
     }
+    session->expect_refs++;
+    *start_pos = session->expect_base + session->expect_buffer_used;
+    pthread_mutex_unlock(&session->expect_lock);
     
-    /* Conditionally seed expect buffer based on skip_seeding flag */
-    if (!skip_seeding && session->screen) {
-        session->expect_buffer_used = 0;
-        /* Use heap allocation to avoid 64KB stack buffer */
-        size_t screen_text_size = 65536;
-        char *screen_text = malloc(screen_text_size);
-        if (!screen_text) {
-            log_error("Failed to allocate screen text buffer");
-            return -1;
-        }
-        size_t screen_len = screen_buffer_get_text(session->screen, screen_text, screen_text_size - 1);
-        
-        if (screen_len > 0) {
-            size_t copy_size = screen_len;
-            if (copy_size >= session->expect_buffer_size) {
-                copy_size = session->expect_buffer_size - 1;
-            }
-            
-            memcpy(session->expect_buffer, screen_text, copy_size);
-            session->expect_buffer[copy_size] = '\0';
-            session->expect_buffer_used = copy_size;
-            log_debug("Seeded expect buffer with %zu bytes from screen buffer", copy_size);
-        } else {
-            log_debug("Screen buffer empty, expect buffer not seeded");
-        }
-        free(screen_text);
-    } else if (skip_seeding) {
-        /* Incoming-only mode: start with an empty expect buffer so only
-         * PTY output arriving after expect activation is matched. */
-        session->expect_buffer_used = 0;
-        session->expect_buffer[0] = '\0';
-        log_debug("Incoming-only mode: cleared expect buffer, waiting for new data only");
+    log_debug("Attached expect to session %s", session->id);
+    return 0;
+}
+
+/**
+ * Detach an expect operation; the window is freed with the last one.
+ */
+void session_expect_detach(session_t *session) {
+    if (!session) {
+        return;
     }
     
     pthread_mutex_lock(&session->expect_lock);
-    session->expect_active = true;
+    if (session->expect_refs > 0 && --session->expect_refs == 0) {
+        free(session->expect_buffer);
+        session->expect_buffer = NULL;
+        session->expect_buffer_size = 0;
+        session->expect_buffer_used = 0;
+        session->expect_base = 0;
+    }
     pthread_mutex_unlock(&session->expect_lock);
     
-    log_debug("Started expect for session %s (skip_seeding=%d)", session->id, skip_seeding);
-    return 0;
+    log_debug("Detached expect from session %s", session->id);
 }
 
 /**
  * Check whether an expect operation is currently active on this session
  * (thread-safe)
- * @param session Session
- * @return true if an expect is in progress
  */
 bool session_expect_active(session_t *session) {
-    if (!session) {
-        return false;
-    }
-    
-    pthread_mutex_lock(&session->expect_lock);
-    bool active = session->expect_active;
-    pthread_mutex_unlock(&session->expect_lock);
-    return active;
+    return session_expect_count(session) > 0;
 }
 
-/**
- * Stop expect operation - deactivate expect buffer
- * @param session Session
- */
-void session_stop_expect(session_t *session) {
+int session_expect_count(session_t *session) {
     if (!session) {
-        return;
+        return 0;
     }
     
     pthread_mutex_lock(&session->expect_lock);
-    session->expect_active = false;
-    session->expect_buffer_used = 0;
+    int refs = session->expect_refs;
     pthread_mutex_unlock(&session->expect_lock);
-    
-    log_debug("Stopped expect for session %s", session->id);
-}
-
-
-/**
- * Clear expect buffer contents
- * @param session Session
- */
-void session_clear_expect_buffer(session_t *session) {
-    if (!session || !session->expect_buffer) {
-        return;
-    }
-    
-    pthread_mutex_lock(&session->expect_lock);
-    session->expect_buffer_used = 0;
-    session->expect_buffer[0] = '\0';
-    pthread_mutex_unlock(&session->expect_lock);
-    
-    log_debug("Cleared expect buffer for session %s", session->id);
+    return refs;
 }
 
 session_line_no_t session_get_current_line_no(const session_t *session) {
@@ -1498,16 +1463,12 @@ session_line_no_t session_get_current_line_no(const session_t *session) {
 
 
 /**
- * Read from expect buffer (non-destructive peek)
- * @param session Session
- * @param buffer Output buffer
- * @param size Maximum bytes to read
- * @return Number of bytes read
+ * Read from the expect window (non-destructive): bytes from stream position
+ * *pos on, advancing *pos. A reader that fell more than a window behind
+ * resumes at the oldest byte still held.
  */
-ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size,
-                                   session_line_no_t start_line, size_t start_offset,
-                                   session_line_no_t *next_line, size_t *next_offset) {
-    if (!session || !buffer || size == 0) {
+ssize_t session_expect_read(session_t *session, uint64_t *pos, char *buffer, size_t size) {
+    if (!session || !pos || !buffer || size == 0) {
         return -1;
     }
     
@@ -1515,50 +1476,22 @@ ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size
      * callback appends new output to the same buffer. */
     pthread_mutex_lock(&session->expect_lock);
     
-    if (!session->expect_active || !session->expect_buffer) {
+    if (session->expect_refs <= 0 || !session->expect_buffer) {
         pthread_mutex_unlock(&session->expect_lock);
-        log_debug("session_read_expect_output: expect not active or buffer null");
         errno = EINVAL;
         return -1;
     }
     
-    if (next_line) {
-        *next_line = session->current_line_no;
+    if (*pos < session->expect_base) {
+        *pos = session->expect_base;
     }
-    if (next_offset) {
-        *next_offset = session->current_line_offset;
-    }
-    
-    size_t start_index = 0;
-    session_line_no_t line_no = start_line;
-    size_t line_offset = 0;
-    
-    while (start_index < session->expect_buffer_used) {
-        if (line_no > start_line || (line_no == start_line && line_offset >= start_offset)) {
-            break;
-        }
-        
-        if (session->expect_buffer[start_index] == '\n') {
-            line_no++;
-            line_offset = 0;
-        } else {
-            line_offset++;
-        }
-        start_index++;
-    }
-    
-    size_t available = (start_index < session->expect_buffer_used)
-        ? (session->expect_buffer_used - start_index)
-        : 0;
-    size_t to_copy = (size < available) ? size : available;
-    
-    log_debug("session_read_expect_output: returning %zu bytes from index %zu (buffer_used=%zu, start_line=%lu, start_offset=%zu, current_line=%lu, current_offset=%zu)",
-              to_copy, start_index, session->expect_buffer_used,
-              (unsigned long)start_line, start_offset,
-              (unsigned long)session->current_line_no, session->current_line_offset);
+    uint64_t end = session->expect_base + session->expect_buffer_used;
+    size_t available = *pos < end ? (size_t)(end - *pos) : 0;
+    size_t to_copy = size < available ? size : available;
     
     if (to_copy > 0) {
-        memcpy(buffer, session->expect_buffer + start_index, to_copy);
+        memcpy(buffer, session->expect_buffer + (*pos - session->expect_base), to_copy);
+        *pos += to_copy;
     }
     
     pthread_mutex_unlock(&session->expect_lock);

@@ -628,6 +628,33 @@ void test_sgr_truecolor_does_not_leak_params(void) {
     PASS();
 }
 
+void test_sgr_colon_form(void) {
+    TEST("sgr_colon_form");
+    
+    screen_buffer_t *screen = screen_buffer_create(1, 20, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    /* A: 38:2::r:g:b + 48:2:r:g:b (no colour space), B: 38:5:n, C: 4:3 curly underline,
+     * D: 4:0 underline off, E: colon form mixed with ';' form, F: unknown colon SGR ignored,
+     * G: colon in a non-SGR sequence is dropped */
+    feed_text(screen, &parser, "\x1b[38:2::10:20:30;48:2:1:2:3mA\x1b[38:5:200mB\x1b[4:3mC\x1b[4:0mD"
+                               "\x1b[0;1;38;2;4;5;6mE\x1b[1:5mF\x1b[2:3AG");
+    const char_cell_t *c = screen->cells;
+    if (c[0].attr.fg_color != COLOR_RGB(10, 20, 30)) { screen_buffer_destroy(screen); FAIL("38:2::r:g:b"); }
+    if (c[0].attr.bg_color != COLOR_RGB(1, 2, 3)) { screen_buffer_destroy(screen); FAIL("48:2:r:g:b"); }
+    if (c[0].attr.bold || c[0].attr.underline || c[0].attr.italic || c[0].attr.dim) {
+        screen_buffer_destroy(screen); FAIL("colour parameters leaked into attributes");
+    }
+    if (c[1].attr.fg_color != COLOR_PALETTE(200)) { screen_buffer_destroy(screen); FAIL("38:5:n"); }
+    if (!c[2].attr.underline || c[2].attr.italic) { screen_buffer_destroy(screen); FAIL("4:3"); }
+    if (c[3].attr.underline) { screen_buffer_destroy(screen); FAIL("4:0"); }
+    if (c[4].attr.fg_color != COLOR_RGB(4, 5, 6) || !c[4].attr.bold) { screen_buffer_destroy(screen); FAIL("semicolon form"); }
+    if (c[5].attr.blink) { screen_buffer_destroy(screen); FAIL("1:5 sub-parameter taken as blink"); }
+    if (c[6].attr.fg_color != c[5].attr.fg_color || screen->cursor.row != 0) { screen_buffer_destroy(screen); FAIL("non-SGR colon"); }
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
 void test_attr_to_sgr(void) {
     TEST("attr_to_sgr");
     
@@ -767,6 +794,50 @@ void test_combining_wrap_and_copy(void) {
     PASS();
 }
 
+void test_grapheme_widths(void) {
+    TEST("grapheme_widths");
+    
+    screen_buffer_t *screen = screen_buffer_create(3, 10, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    uint32_t cps[CLUSTER_MAX_CPS];
+    const char_cell_t *c;
+    
+    /* U+2764 + FE0F takes 2 columns, plain U+2764 and 'a' + FE0F stay narrow */
+    feed_text(screen, &parser, "a\xe2\x9d\xa4\xef\xb8\x8f" "b" "\xe2\x9d\xa4" "c" "a\xef\xb8\x8f" "d");
+    c = screen->cells;
+    if (c[2].ch != CELL_CONTINUATION || c[3].ch != 'b') { screen_buffer_destroy(screen); FAIL("FE0F did not widen the heart"); }
+    if (screen_buffer_cell_codepoints(screen, &c[1], cps) != 2 || cps[1] != 0xFE0F) { screen_buffer_destroy(screen); FAIL("heart cluster"); }
+    if (c[5].ch != 'c') { screen_buffer_destroy(screen); FAIL("text-presentation heart widened"); }
+    if (screen_buffer_cell_codepoints(screen, &c[6], cps) != 2 || c[7].ch != 'd') { screen_buffer_destroy(screen); FAIL("FE0F after a letter"); }
+    
+    /* A flag (two regional indicators) takes 2 columns, an odd one starts a new flag */
+    feed_text(screen, &parser, "\r\n\xf0\x9f\x87\xa9\xf0\x9f\x87\xaa" "x\xf0\x9f\x87\xab\xf0\x9f\x87\xb7\xf0\x9f\x87\xa9y");
+    c = screen->cells + 10;
+    if (screen_buffer_cell_codepoints(screen, &c[0], cps) != 2 || c[1].ch != CELL_CONTINUATION || c[2].ch != 'x') {
+        screen_buffer_destroy(screen); FAIL("flag is not one 2-column cell");
+    }
+    if (screen_buffer_cell_codepoints(screen, &c[3], cps) != 2 || screen_buffer_cell_codepoints(screen, &c[5], cps) != 1 || c[7].ch != 'y') {
+        screen_buffer_destroy(screen); FAIL("flag pairing");
+    }
+    
+    /* Hangul conjoining jamo L + V + T form one 2-column syllable */
+    feed_text(screen, &parser, "\r\n\xe1\x84\x92\xe1\x85\xa1\xe1\x86\xab" "z");
+    c = screen->cells + 20;
+    if (screen_buffer_cell_codepoints(screen, &c[0], cps) != 3 || c[1].ch != CELL_CONTINUATION || c[2].ch != 'z') {
+        screen_buffer_destroy(screen); FAIL("jamo syllable");
+    }
+    screen_buffer_destroy(screen);
+    
+    /* FE0F in the last column cannot widen: nothing breaks */
+    screen = screen_buffer_create(2, 4, 0);
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "abc\xe2\x9d\xa4\xef\xb8\x8f" "d");
+    if (screen->cursor.row < 0 || screen->cursor.row > 1) { screen_buffer_destroy(screen); FAIL("cursor after FE0F in last column"); }
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
 void test_cluster_pool_limits(void) {
     TEST("cluster_pool_limits");
     
@@ -843,12 +914,14 @@ int main(void) {
     /* Colours */
     test_sgr_colors();
     test_sgr_truecolor_does_not_leak_params();
+    test_sgr_colon_form();
     test_attr_to_sgr();
     test_render_ansi();
     /* Combining characters */
     test_combining_marks();
     test_combining_sequences();
     test_combining_wrap_and_copy();
+    test_grapheme_widths();
     test_cluster_pool_limits();
     /* Robustness */
     test_huge_csi_parameters();

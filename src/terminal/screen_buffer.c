@@ -358,11 +358,40 @@ static void cluster_append(screen_buffer_t *screen, char_cell_t *cell, uint32_t 
     if (idx >= 0) cell->ch = CELL_CLUSTER_FLAG | (uint32_t)idx;
 }
 
+/* U+FE0F after a narrow emoji-capable character: show it as a 2-column emoji,
+ * taking the next cell (when there is one and the cursor is right behind). */
+static void widen_last_cell(screen_buffer_t *screen, char_cell_t *target) {
+    int col = screen->last_col + 1;
+    if (screen->last_width != 1 || col >= screen->cols) return;
+    if (screen->cursor.row != screen->last_row || screen->cursor.col != col) return;
+    char_cell_t *right = get_cell(screen, screen->last_row, col);
+    if (!right) return;
+    break_wide(screen, screen->last_row, col);
+    right->ch = CELL_CONTINUATION;
+    right->attr = target->attr;
+    screen->last_width = 2;
+    screen->cursor.col++;
+    if (screen->cursor.col >= screen->cols) {
+        if (screen->auto_wrap) {
+            wrap_to_next_line(screen);
+        } else {
+            screen->cursor.col = screen->cols - 1;
+        }
+    }
+}
+
 void screen_buffer_put_codepoint(screen_buffer_t *screen, uint32_t cp) {
     int width = utf8_cp_width(cp);
     if (is_attaching(cp)) {
         char_cell_t *target = attach_target(screen);
-        if (target) cluster_append(screen, target, cp);
+        if (target) {
+            uint32_t cps[CLUSTER_MAX_CPS];
+            int n = screen_buffer_cell_codepoints(screen, target, cps);
+            cluster_append(screen, target, cp);
+            if (cp == 0xFE0F && n == 1 && utf8_is_emoji_vs_base(cps[0])) {
+                widen_last_cell(screen, target);
+            }
+        }
         return;                 /* combining / zero-width: no cell of its own */
     }
     if (width == 0) return;     /* control character */
@@ -374,6 +403,18 @@ void screen_buffer_put_codepoint(screen_buffer_t *screen, uint32_t cp) {
             uint32_t cps[CLUSTER_MAX_CPS];
             int n = screen_buffer_cell_codepoints(screen, target, cps);
             if (n > 0 && cps[n - 1] == 0x200D) {
+                cluster_append(screen, target, cp);
+                return;
+            }
+        }
+    }
+    /* The second regional indicator of a pair joins the first (a flag) */
+    if (utf8_is_regional_indicator(cp)) {
+        char_cell_t *target = attach_target(screen);
+        if (target) {
+            uint32_t cps[CLUSTER_MAX_CPS];
+            if (screen_buffer_cell_codepoints(screen, target, cps) == 1 &&
+                utf8_is_regional_indicator(cps[0])) {
                 cluster_append(screen, target, cp);
                 return;
             }
@@ -665,6 +706,18 @@ static void sgr_extended_color(const int *params, int count, int *i, uint32_t *c
 }
 
 void screen_buffer_set_sgr(screen_buffer_t *screen, const int *params, int count) {
+    screen_buffer_set_sgr_ex(screen, params, count, 0);
+}
+
+/* Colon sub-parameters of params[i] (bits of colon_mask) are params[i+1..*end-1] */
+static int sgr_sub_end(int i, int count, unsigned colon_mask) {
+    int j = i + 1;
+    while (j < count && j < 32 && (colon_mask & (1u << j))) j++;
+    return j;
+}
+
+void screen_buffer_set_sgr_ex(screen_buffer_t *screen, const int *params, int count,
+                              unsigned colon_mask) {
     char_attr_t *attr = &screen->cursor.attr;
     if (count == 0) {
         reset_attr(attr);
@@ -673,6 +726,31 @@ void screen_buffer_set_sgr(screen_buffer_t *screen, const int *params, int count
     
     for (int i = 0; i < count; i++) {
         int param = params[i];
+        
+        int end = sgr_sub_end(i, count, colon_mask);
+        if (end > i + 1) {
+            /* Colon form: 38:5:n  38:2:r:g:b  38:2:cs:r:g:b  4:style. Anything else is ignored. */
+            int subs = end - i - 1;
+            if (param == 38 || param == 48) {
+                uint32_t *color = (param == 38) ? &attr->fg_color : &attr->bg_color;
+                int kind = params[i + 1];
+                if (kind == 5 && subs >= 2) {
+                    int n = params[i + 2];
+                    if (n >= 0 && n <= 255) *color = COLOR_PALETTE(n);
+                } else if (kind == 2 && subs >= 4) {
+                    /* With a colour space id (usually empty) there are 5 sub-parameters */
+                    int k = (subs >= 5) ? i + 3 : i + 2;
+                    int r = params[k], g = params[k + 1], b = params[k + 2];
+                    if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
+                        *color = COLOR_RGB(r, g, b);
+                    }
+                }
+            } else if (param == 4) {
+                attr->underline = params[i + 1] != 0;
+            }
+            i = end - 1;
+            continue;
+        }
         
         switch (param) {
             case 0: reset_attr(attr); break;
@@ -867,7 +945,7 @@ void screen_buffer_process_sequence(screen_buffer_t *screen, const vt100_sequenc
             break;
             
         case VT100_SEQ_SGR:
-            screen_buffer_set_sgr(screen, seq->params, seq->param_count);
+            screen_buffer_set_sgr_ex(screen, seq->params, seq->param_count, seq->colon_mask);
             break;
             
         case VT100_SEQ_SAVE_CURSOR:
