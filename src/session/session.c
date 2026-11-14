@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/wait.h>
 #include <errno.h>
 #include <stdio.h>
@@ -32,6 +33,28 @@ typedef struct {
 /* Forward declarations */
 static void session_pty_callback(int fd, io_event_type_t events, void *user_data);
 static void session_attach_close_all(struct session *session);
+/* Like session_attach_write but, for the one-off screen redraw, waits (up
+ * to about a second) for a full socket buffer to drain instead of dropping
+ * the rest: a coloured redraw can be larger than the socket buffer. */
+static void session_attach_write_wait(int fd, const char *data, size_t len) {
+    size_t total = 0;
+    int stalls = 0;
+    while (total < len) {
+        ssize_t w = write(fd, data + total, len - total);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            if ((errno == EAGAIN || errno == EWOULDBLOCK) && stalls++ < 10) {
+                struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+                poll(&pfd, 1, 100);
+                continue;
+            }
+            return;
+        }
+        total += (size_t)w;
+        stalls = 0;
+    }
+}
+
 static void session_attach_broadcast(struct session *session, const char *data, size_t len);
 static void session_flush_output_log(session_t *session);
 static void session_close_output_file(session_t *session);
@@ -695,35 +718,32 @@ bool session_attach_client(session_t *session, int fd) {
 void session_attach_redraw(session_t *session, int fd) {
     if (!session || !session->screen) return;
     
-    /* Up to UTF8_MAX_BYTES per cell plus a newline per row */
-    size_t cap = (size_t)session->rows * ((size_t)session->cols * UTF8_MAX_BYTES + 2) + 64;
-    char *text = malloc(cap);
-    char *out = malloc(cap * 2 + 64);
-    if (!text || !out) {
-        free(text);
-        free(out);
-        return;
-    }
-    
-    size_t n = session_get_screen_text(session, text, cap);
-    /* The text ends with a newline after the last row; drop it so the
-     * redraw does not scroll the client's terminal. */
-    if (n > 0 && text[n - 1] == '\n') n--;
-    
-    size_t pos = 0;
-    memcpy(out, "\x1b[2J\x1b[H", 7);
-    pos = 7;
-    for (size_t i = 0; i < n; i++) {
-        if (text[i] == '\n') out[pos++] = '\r';
-        out[pos++] = text[i];
-    }
+    size_t body_len = 0;
+    char *body = screen_buffer_render_ansi(session->screen, &body_len);
+    if (!body) return;
     
     int row = 0, col = 0;
     session_get_cursor_position(session, &row, &col);
-    pos += (size_t)snprintf(out + pos, 32, "\x1b[%d;%dH", row + 1, col + 1);
     
-    session_attach_write(fd, out, pos);
-    free(text);
+    char cursor[32];
+    int cursor_len = snprintf(cursor, sizeof(cursor), "\x1b[%d;%dH", row + 1, col + 1);
+    
+    size_t cap = body_len + 7 + (size_t)cursor_len + 1;
+    char *out = malloc(cap);
+    if (!out) {
+        free(body);
+        return;
+    }
+    size_t pos = 0;
+    memcpy(out, "\x1b[2J\x1b[H", 7);
+    pos = 7;
+    memcpy(out + pos, body, body_len);
+    pos += body_len;
+    memcpy(out + pos, cursor, (size_t)cursor_len);
+    pos += (size_t)cursor_len;
+    
+    session_attach_write_wait(fd, out, pos);
+    free(body);
     free(out);
 }
 

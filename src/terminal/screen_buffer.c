@@ -519,12 +519,40 @@ void screen_buffer_scroll_down(screen_buffer_t *screen, int n) {
     }
 }
 
+/* Reset all text attributes and colours (SGR 0) */
+static void reset_attr(char_attr_t *attr) {
+    memset(attr, 0, sizeof(*attr));
+    attr->fg_color = COLOR_DEFAULT;
+    attr->bg_color = COLOR_DEFAULT;
+}
+
+/* Parse the colour arguments after SGR 38/48 at params[*i]: "5;n" or
+ * "2;r;g;b". Advances *i past what was consumed. Malformed or truncated
+ * arguments are consumed without changing the colour. */
+static void sgr_extended_color(const int *params, int count, int *i, uint32_t *color) {
+    if (*i + 1 >= count) { *i = count; return; }
+    int kind = params[*i + 1];
+    if (kind == 5) {
+        if (*i + 2 < count) {
+            int n = params[*i + 2];
+            if (n >= 0 && n <= 255) *color = COLOR_PALETTE(n);
+        }
+        *i = (*i + 2 < count) ? *i + 2 : count;
+    } else if (kind == 2) {
+        if (*i + 4 < count) {
+            int r = params[*i + 2], g = params[*i + 3], b = params[*i + 4];
+            if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
+                *color = COLOR_RGB(r, g, b);
+            }
+        }
+        *i = (*i + 4 < count) ? *i + 4 : count;
+    }
+}
+
 void screen_buffer_set_sgr(screen_buffer_t *screen, const int *params, int count) {
+    char_attr_t *attr = &screen->cursor.attr;
     if (count == 0) {
-        /* Reset all attributes */
-        memset(&screen->cursor.attr, 0, sizeof(screen->cursor.attr));
-        screen->cursor.attr.fg_color = COLOR_DEFAULT;
-        screen->cursor.attr.bg_color = COLOR_DEFAULT;
+        reset_attr(attr);
         return;
     }
     
@@ -532,63 +560,87 @@ void screen_buffer_set_sgr(screen_buffer_t *screen, const int *params, int count
         int param = params[i];
         
         switch (param) {
-            case 0: /* Reset */
-                memset(&screen->cursor.attr, 0, sizeof(screen->cursor.attr));
-                screen->cursor.attr.fg_color = COLOR_DEFAULT;
-                screen->cursor.attr.bg_color = COLOR_DEFAULT;
-                break;
-            case 1: screen->cursor.attr.bold = 1; break;
-            case 2: screen->cursor.attr.dim = 1; break;
-            case 3: screen->cursor.attr.italic = 1; break;
-            case 4: screen->cursor.attr.underline = 1; break;
-            case 5: screen->cursor.attr.blink = 1; break;
-            case 7: screen->cursor.attr.reverse = 1; break;
-            case 8: screen->cursor.attr.hidden = 1; break;
-            case 9: screen->cursor.attr.strikethrough = 1; break;
-            case 22: screen->cursor.attr.bold = 0; screen->cursor.attr.dim = 0; break;
-            case 23: screen->cursor.attr.italic = 0; break;
-            case 24: screen->cursor.attr.underline = 0; break;
-            case 25: screen->cursor.attr.blink = 0; break;
-            case 27: screen->cursor.attr.reverse = 0; break;
-            case 28: screen->cursor.attr.hidden = 0; break;
-            case 29: screen->cursor.attr.strikethrough = 0; break;
+            case 0: reset_attr(attr); break;
+            case 1: attr->bold = 1; break;
+            case 2: attr->dim = 1; break;
+            case 3: attr->italic = 1; break;
+            case 4: attr->underline = 1; break;
+            case 5: attr->blink = 1; break;
+            case 7: attr->reverse = 1; break;
+            case 8: attr->hidden = 1; break;
+            case 9: attr->strikethrough = 1; break;
+            case 22: attr->bold = 0; attr->dim = 0; break;
+            case 23: attr->italic = 0; break;
+            case 24: attr->underline = 0; break;
+            case 25: attr->blink = 0; break;
+            case 27: attr->reverse = 0; break;
+            case 28: attr->hidden = 0; break;
+            case 29: attr->strikethrough = 0; break;
             
-            /* Foreground colors (30-37, 90-97) */
-            case 30: screen->cursor.attr.fg_color = COLOR_BLACK; break;
-            case 31: screen->cursor.attr.fg_color = COLOR_RED; break;
-            case 32: screen->cursor.attr.fg_color = COLOR_GREEN; break;
-            case 33: screen->cursor.attr.fg_color = COLOR_YELLOW; break;
-            case 34: screen->cursor.attr.fg_color = COLOR_BLUE; break;
-            case 35: screen->cursor.attr.fg_color = COLOR_MAGENTA; break;
-            case 36: screen->cursor.attr.fg_color = COLOR_CYAN; break;
-            case 37: screen->cursor.attr.fg_color = COLOR_WHITE; break;
-            case 39: screen->cursor.attr.fg_color = COLOR_DEFAULT; break;
+            case 39: attr->fg_color = COLOR_DEFAULT; break;
+            case 49: attr->bg_color = COLOR_DEFAULT; break;
             
-            /* Background colors (40-47, 100-107) */
-            case 40: screen->cursor.attr.bg_color = COLOR_BLACK; break;
-            case 41: screen->cursor.attr.bg_color = COLOR_RED; break;
-            case 42: screen->cursor.attr.bg_color = COLOR_GREEN; break;
-            case 43: screen->cursor.attr.bg_color = COLOR_YELLOW; break;
-            case 44: screen->cursor.attr.bg_color = COLOR_BLUE; break;
-            case 45: screen->cursor.attr.bg_color = COLOR_MAGENTA; break;
-            case 46: screen->cursor.attr.bg_color = COLOR_CYAN; break;
-            case 47: screen->cursor.attr.bg_color = COLOR_WHITE; break;
-            case 49: screen->cursor.attr.bg_color = COLOR_DEFAULT; break;
+            /* Extended colours: 38;5;n  38;2;r;g;b  (48 for background) */
+            case 38: sgr_extended_color(params, count, &i, &attr->fg_color); break;
+            case 48: sgr_extended_color(params, count, &i, &attr->bg_color); break;
             
-            /* 256-color mode: 38;5;n (fg) or 48;5;n (bg) */
-            case 38:
-            case 48:
-                if (i + 2 < count && params[i + 1] == 5) {
-                    if (param == 38) {
-                        screen->cursor.attr.fg_color = params[i + 2];
-                    } else {
-                        screen->cursor.attr.bg_color = params[i + 2];
-                    }
-                    i += 2;
+            default:
+                if (param >= 30 && param <= 37) {
+                    attr->fg_color = COLOR_PALETTE(param - 30);
+                } else if (param >= 40 && param <= 47) {
+                    attr->bg_color = COLOR_PALETTE(param - 40);
+                } else if (param >= 90 && param <= 97) {
+                    attr->fg_color = COLOR_PALETTE(param - 90 + 8);
+                } else if (param >= 100 && param <= 107) {
+                    attr->bg_color = COLOR_PALETTE(param - 100 + 8);
                 }
                 break;
         }
     }
+}
+
+bool screen_buffer_attr_equal(const char_attr_t *a, const char_attr_t *b) {
+    return a->bold == b->bold && a->dim == b->dim && a->italic == b->italic &&
+           a->underline == b->underline && a->blink == b->blink &&
+           a->reverse == b->reverse && a->hidden == b->hidden &&
+           a->strikethrough == b->strikethrough &&
+           a->fg_color == b->fg_color && a->bg_color == b->bg_color;
+}
+
+/* Append ";..." SGR arguments for one colour. fg selects 30/90/38, else 40/100/48 */
+static size_t sgr_color_args(char *out, size_t size, uint32_t color, bool fg) {
+    if ((color & COLOR_KIND_MASK) == COLOR_KIND_PALETTE) {
+        unsigned n = color & 0xffu;
+        if (n < 8) return (size_t)snprintf(out, size, ";%u", (fg ? 30u : 40u) + n);
+        if (n < 16) return (size_t)snprintf(out, size, ";%u", (fg ? 90u : 100u) + n - 8);
+        return (size_t)snprintf(out, size, ";%u;5;%u", fg ? 38u : 48u, n);
+    }
+    if ((color & COLOR_KIND_MASK) == COLOR_KIND_RGB) {
+        return (size_t)snprintf(out, size, ";%u;2;%u;%u;%u", fg ? 38u : 48u,
+                                (color >> 16) & 0xffu, (color >> 8) & 0xffu, color & 0xffu);
+    }
+    return 0;
+}
+
+size_t screen_buffer_attr_to_sgr(const char_attr_t *attr, char *buffer, size_t size) {
+    if (!buffer || size == 0) return 0;
+    char tmp[96];
+    size_t n = 0;
+    n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "\x1b[0");
+    if (attr->bold)          n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, ";1");
+    if (attr->dim)           n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, ";2");
+    if (attr->italic)        n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, ";3");
+    if (attr->underline)     n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, ";4");
+    if (attr->blink)         n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, ";5");
+    if (attr->reverse)       n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, ";7");
+    if (attr->hidden)        n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, ";8");
+    if (attr->strikethrough) n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, ";9");
+    n += sgr_color_args(tmp + n, sizeof(tmp) - n, attr->fg_color, true);
+    n += sgr_color_args(tmp + n, sizeof(tmp) - n, attr->bg_color, false);
+    n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "m");
+    if (n >= size) { buffer[0] = '\0'; return 0; }
+    memcpy(buffer, tmp, n + 1);
+    return n;
 }
 
 void screen_buffer_save_cursor(screen_buffer_t *screen) {
@@ -799,6 +851,80 @@ size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_
     }
     buffer[pos] = '\0';
     return pos;
+}
+
+/* Growable output buffer for screen_buffer_render_ansi */
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+    bool failed;
+} ansi_out_t;
+
+static void ansi_put(ansi_out_t *o, const char *src, size_t n) {
+    if (o->failed) return;
+    if (o->len + n + 1 > o->cap) {
+        size_t cap = o->cap ? o->cap : 4096;
+        while (cap < o->len + n + 1) cap *= 2;
+        char *p = realloc(o->data, cap);
+        if (!p) { o->failed = true; return; }
+        o->data = p;
+        o->cap = cap;
+    }
+    memcpy(o->data + o->len, src, n);
+    o->len += n;
+    o->data[o->len] = '\0';
+}
+
+/* A blank cell at the end of a row that shows nothing and need not be drawn */
+static bool cell_is_trailing_blank(const char_cell_t *cell) {
+    return cell->ch == ' ' && cell->attr.bg_color == COLOR_DEFAULT &&
+           !cell->attr.reverse && !cell->attr.underline && !cell->attr.strikethrough;
+}
+
+char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len) {
+    ansi_out_t o = {0};
+    char_attr_t cur;
+    memset(&cur, 0, sizeof(cur));
+    
+    for (int r = 0; r < screen->rows; r++) {
+        const char_cell_t *row_cells = &screen->cells[(size_t)r * screen->cols];
+        int last = screen->cols - 1;
+        while (last >= 0 && cell_is_trailing_blank(&row_cells[last])) last--;
+        
+        for (int c = 0; c <= last; c++) {
+            const char_cell_t *cell = &row_cells[c];
+            if (cell->ch == CELL_CONTINUATION) continue;
+            if (!screen_buffer_attr_equal(&cur, &cell->attr)) {
+                char sgr[96];
+                size_t n = screen_buffer_attr_to_sgr(&cell->attr, sgr, sizeof(sgr));
+                ansi_put(&o, sgr, n);
+                cur = cell->attr;
+            }
+            char enc[UTF8_MAX_BYTES];
+            ansi_put(&o, enc, utf8_encode(cell->ch, enc));
+        }
+        
+        /* Do not let a row's attributes run into the line break */
+        char_attr_t none;
+        reset_attr(&none);
+        if (!screen_buffer_attr_equal(&cur, &none)) {
+            ansi_put(&o, "\x1b[0m", 4);
+            cur = none;
+        }
+        if (r + 1 < screen->rows) ansi_put(&o, "\r\n", 2);
+    }
+    
+    if (o.failed) {
+        free(o.data);
+        if (out_len) *out_len = 0;
+        return NULL;
+    }
+    if (!o.data) {
+        o.data = calloc(1, 1);
+    }
+    if (out_len) *out_len = o.len;
+    return o.data;
 }
 
 const char_cell_t *screen_buffer_get_scrollback_line(const screen_buffer_t *screen, int line_index) {

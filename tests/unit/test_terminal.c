@@ -1,6 +1,7 @@
 #include "pshell/vt100_parser.h"
 #include "pshell/screen_buffer.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
@@ -577,6 +578,101 @@ void test_utf8_scrollback(void) {
 }
 
 
+/* ---- Colours and attributes ---- */
+
+void test_sgr_colors(void) {
+    TEST("sgr_colors");
+    
+    screen_buffer_t *screen = screen_buffer_create(2, 20, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser,
+              "\x1b[31mA\x1b[92mB\x1b[38;5;200mC\x1b[38;2;10;20;30mD"
+              "\x1b[44;1mE\x1b[0mF");
+    
+    const char_cell_t *c = screen->cells;
+    if (c[0].attr.fg_color != COLOR_PALETTE(1)) { screen_buffer_destroy(screen); FAIL("31 = palette 1"); }
+    if (c[1].attr.fg_color != COLOR_PALETTE(10)) { screen_buffer_destroy(screen); FAIL("92 = bright green (palette 10)"); }
+    if (c[2].attr.fg_color != COLOR_PALETTE(200)) { screen_buffer_destroy(screen); FAIL("38;5;200"); }
+    if (c[3].attr.fg_color != COLOR_RGB(10, 20, 30)) { screen_buffer_destroy(screen); FAIL("38;2;10;20;30"); }
+    if (c[4].attr.bg_color != COLOR_PALETTE(4) || !c[4].attr.bold ||
+        c[4].attr.fg_color != COLOR_RGB(10, 20, 30)) {
+        screen_buffer_destroy(screen);
+        FAIL("44;1 keeps fg, sets bg and bold");
+    }
+    if (c[5].attr.fg_color != COLOR_DEFAULT || c[5].attr.bg_color != COLOR_DEFAULT || c[5].attr.bold) {
+        screen_buffer_destroy(screen);
+        FAIL("reset");
+    }
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
+void test_sgr_truecolor_does_not_leak_params(void) {
+    TEST("sgr_truecolor_does_not_leak_params");
+    
+    /* r;g;b of a truecolour must not be taken as SGR codes (1 = bold, 4 = underline, 7 = reverse) */
+    screen_buffer_t *screen = screen_buffer_create(1, 10, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "\x1b[38;2;1;4;7mX\x1b[48;2;300;0;0mY\x1b[38;5mZ");
+    
+    const char_cell_t *c = screen->cells;
+    if (c[0].attr.fg_color != COLOR_RGB(1, 4, 7) || c[0].attr.bold || c[0].attr.underline || c[0].attr.reverse) {
+        screen_buffer_destroy(screen);
+        FAIL("truecolour params leaked into other attributes");
+    }
+    if (c[1].attr.bg_color != COLOR_DEFAULT) { screen_buffer_destroy(screen); FAIL("out of range rgb ignored"); }
+    if (c[2].attr.fg_color != COLOR_RGB(1, 4, 7)) { screen_buffer_destroy(screen); FAIL("truncated 38;5 ignored"); }
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
+void test_attr_to_sgr(void) {
+    TEST("attr_to_sgr");
+    
+    char_attr_t a;
+    memset(&a, 0, sizeof(a));
+    char buf[96];
+    screen_buffer_attr_to_sgr(&a, buf, sizeof(buf));
+    if (strcmp(buf, "\x1b[0m") != 0) { FAIL("default attributes"); }
+    
+    a.bold = 1;
+    a.underline = 1;
+    a.fg_color = COLOR_PALETTE(2);
+    a.bg_color = COLOR_PALETTE(12);
+    screen_buffer_attr_to_sgr(&a, buf, sizeof(buf));
+    if (strcmp(buf, "\x1b[0;1;4;32;104m") != 0) { FAIL(buf); }
+    
+    a.fg_color = COLOR_PALETTE(200);
+    a.bg_color = COLOR_RGB(1, 2, 3);
+    screen_buffer_attr_to_sgr(&a, buf, sizeof(buf));
+    if (strcmp(buf, "\x1b[0;1;4;38;5;200;48;2;1;2;3m") != 0) { FAIL(buf); }
+    
+    if (screen_buffer_attr_to_sgr(&a, buf, 5) != 0) { FAIL("too small buffer must return 0"); }
+    PASS();
+}
+
+void test_render_ansi(void) {
+    TEST("render_ansi");
+    
+    screen_buffer_t *screen = screen_buffer_create(3, 10, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "plain \x1b[1;31mred\x1b[0m\r\n\x1b[44m  \x1b[0m\r\n");
+    
+    size_t len = 0;
+    char *out = screen_buffer_render_ansi(screen, &len);
+    if (!out) { screen_buffer_destroy(screen); FAIL("render failed"); }
+    const char *expect = "plain \x1b[0;1;31mred\x1b[0m\r\n\x1b[0;44m  \x1b[0m\r\n";
+    int ok = len == strlen(out) && strcmp(out, expect) == 0;
+    if (!ok) printf("\n  got: %s\n", out);
+    free(out);
+    screen_buffer_destroy(screen);
+    if (!ok) { FAIL("unexpected render output"); }
+    PASS();
+}
+
 
 int main(void) {
     printf("=== Terminal Emulation Tests ===\n\n");
@@ -601,6 +697,11 @@ int main(void) {
     test_utf8_invalid();
     test_utf8_output_bounds();
     test_utf8_scrollback();
+    /* Colours */
+    test_sgr_colors();
+    test_sgr_truecolor_does_not_leak_params();
+    test_attr_to_sgr();
+    test_render_ansi();
     
 
     

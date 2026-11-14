@@ -16,6 +16,17 @@
  * - Screen dimensions
  */
 
+/* Colours. 0 = terminal default; otherwise the top byte says how the low
+ * 24 bits are read: palette index (0-255: 0-7 normal, 8-15 bright, 16-255 the
+ * xterm 256-colour cube/greys) or 24-bit RGB. */
+#define COLOR_DEFAULT        0u
+#define COLOR_KIND_PALETTE   0x01000000u
+#define COLOR_KIND_RGB       0x02000000u
+#define COLOR_KIND_MASK      0xff000000u
+#define COLOR_PALETTE(n)     (COLOR_KIND_PALETTE | ((unsigned)(n) & 0xffu))
+#define COLOR_RGB(r, g, b)   (COLOR_KIND_RGB | (((unsigned)(r) & 0xffu) << 16) | \
+                              (((unsigned)(g) & 0xffu) << 8) | ((unsigned)(b) & 0xffu))
+
 /* Character attributes (SGR parameters) */
 typedef struct {
     unsigned int bold:1;
@@ -26,20 +37,9 @@ typedef struct {
     unsigned int reverse:1;
     unsigned int hidden:1;
     unsigned int strikethrough:1;
-    unsigned char fg_color;  /* 0-255 or special values */
-    unsigned char bg_color;  /* 0-255 or special values */
+    uint32_t fg_color;       /* COLOR_DEFAULT, COLOR_PALETTE(n) or COLOR_RGB(r,g,b) */
+    uint32_t bg_color;
 } char_attr_t;
-
-/* Special color values */
-#define COLOR_DEFAULT 0
-#define COLOR_BLACK   1
-#define COLOR_RED     2
-#define COLOR_GREEN   3
-#define COLOR_YELLOW  4
-#define COLOR_BLUE    5
-#define COLOR_MAGENTA 6
-#define COLOR_CYAN    7
-#define COLOR_WHITE   8
 
 /* Cell value of the right half of a double-width character */
 #define CELL_CONTINUATION 0
@@ -144,6 +144,16 @@ size_t screen_buffer_get_line(const screen_buffer_t *screen, int row, char *buff
 size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_t size);
 
 /**
+ * Render the whole screen as terminal output that reproduces it, including
+ * colours and text attributes: rows separated by CR LF (none after the last
+ * row), trailing blanks omitted, attributes reset at each line end. The
+ * caller should clear the terminal first and position the cursor after.
+ * Returns a malloc'd NUL-terminated string (free it), NULL on allocation
+ * failure. *out_len receives the length.
+ */
+char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len);
+
+/**
  * Encode the cells of a line (screen or scrollback row) as UTF-8.
  * Continuation cells (right half of a wide character) are skipped. Stops
  * before overflowing size. Returns the bytes written (NUL terminated).
@@ -230,6 +240,15 @@ void screen_buffer_scroll_down(screen_buffer_t *screen, int n);
  * Set graphic rendition (colors, bold, etc.)
  */
 void screen_buffer_set_sgr(screen_buffer_t *screen, const int *params, int count);
+
+/** True if two attribute sets are identical */
+bool screen_buffer_attr_equal(const char_attr_t *a, const char_attr_t *b);
+
+/**
+ * Write the escape sequence that selects exactly these attributes
+ * (starts with a reset: "ESC[0;...m"). Returns the length, 0 if it did not fit.
+ */
+size_t screen_buffer_attr_to_sgr(const char_attr_t *attr, char *buffer, size_t size);
 
 /**
  * Save cursor position and attributes

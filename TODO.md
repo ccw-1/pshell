@@ -172,8 +172,8 @@
 
 - [ ] **`pshellctl attach` limitations**
   - Output is dropped for a terminal that cannot keep up; limit is `[sessions] max_attach` (default 16)
-  - The initial redraw is plain text (no colours/attributes)
-  - Solution: replay recent raw output or render cell attributes on attach
+  - The initial redraw has colours and attributes, but not the terminal modes of the program (alternate screen, cursor visibility, mouse/paste modes)
+  - Colon-separated SGR parameters (`38:2::r:g:b`) are not parsed by the VT100 parser (the sequence is dropped); `;` forms work
 
 ### Medium Priority
 

@@ -178,6 +178,17 @@ max_attach = 2
         e.send("\x1d")
         e.wait()
 
+        # the redraw on attach keeps colours and attributes
+        # (\\ reaches the shell as a literal backslash: pshellctl send unescapes once)
+        rc, out = ctl(sock, "send", sid, "printf '\\\\e[1;31mCOL\\\\e[0m \\\\e[38;2;1;2;3mRGB\\\\e[0m\\\\n'\\n")
+        check("colour output sent", rc == 0, out)
+        time.sleep(0.5)
+        f = Attach(sock, sid)
+        check("redraw keeps bold red", f.read_until("\x1b[0;1;31mCOL\x1b[0m"), repr(f.buf))
+        check("redraw keeps truecolour", f.read_until("\x1b[0;38;2;1;2;3mRGB"), repr(f.buf))
+        f.send("\x1d")
+        f.wait()
+
         # shell exits -> attached terminal is told the session ended
         b.send("exit\n")
         check("session end reported", b.read_until("[session ended]"), b.buf.decode(errors="replace"))
