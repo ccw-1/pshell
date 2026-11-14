@@ -408,6 +408,175 @@ void test_screen_buffer_resize_scrollback(void) {
     screen_buffer_destroy(screen);
     PASS();
 }
+/* ---- UTF-8 ---- */
+
+/* Print `text` on a fresh screen and compare row 0 with `expect_line` */
+static int utf8_row_is(int cols, const char *text, int row, const char *expect_line) {
+    screen_buffer_t *screen = screen_buffer_create(4, cols, 10);
+    if (!screen) return 0;
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, text);
+    char line[256];
+    screen_buffer_get_line(screen, row, line, sizeof(line));
+    /* Trailing blanks are not interesting */
+    size_t n = strlen(line);
+    while (n > 0 && line[n - 1] == ' ') line[--n] = '\0';
+    int ok = strcmp(line, expect_line) == 0;
+    if (!ok) printf("\n  got '%s' expected '%s'\n  ", line, expect_line);
+    screen_buffer_destroy(screen);
+    return ok;
+}
+
+void test_utf8_decode(void) {
+    TEST("utf8_decode");
+    
+    if (!utf8_row_is(20, "\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae", 0,
+                     "\xe2\x95\xad\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae")) {
+        FAIL("box drawing characters not preserved");
+    }
+    if (!utf8_row_is(20, "caf\xc3\xa9 \xe2\x9c\x93 \xf0\x9f\x98\x80x", 0,
+                     "caf\xc3\xa9 \xe2\x9c\x93 \xf0\x9f\x98\x80x")) {
+        FAIL("2, 3 and 4 byte characters not preserved");
+    }
+    PASS();
+}
+
+void test_utf8_cursor_and_width(void) {
+    TEST("utf8_cursor_and_width");
+    
+    screen_buffer_t *screen = screen_buffer_create(4, 20, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    
+    /* Three 3-byte characters are 3 columns, not 9 */
+    feed_text(screen, &parser, "\xe2\x94\x82\xe2\x94\x80\xe2\x94\x82");
+    int row, col;
+    screen_buffer_get_cursor(screen, &row, &col);
+    if (col != 3) {
+        screen_buffer_destroy(screen);
+        FAIL("cursor advanced per byte instead of per character");
+    }
+    
+    /* Wide characters take two columns */
+    feed_text(screen, &parser, "\xe6\x97\xa5\xe6\x9c\xac");
+    screen_buffer_get_cursor(screen, &row, &col);
+    if (col != 7) {
+        screen_buffer_destroy(screen);
+        FAIL("wide characters should advance two columns");
+    }
+    screen_buffer_destroy(screen);
+    
+    /* Combining mark has no width and is not stored: "e" + U+0301 */
+    if (!utf8_row_is(10, "e\xcc\x81x", 0, "ex")) {
+        FAIL("combining character should be dropped");
+    }
+    
+    /* Wide character that does not fit in the last column wraps */
+    if (!utf8_row_is(5, "abcd\xe6\x97\xa5", 0, "abcd") ||
+        !utf8_row_is(5, "abcd\xe6\x97\xa5", 1, "\xe6\x97\xa5")) {
+        FAIL("wide character at the last column should wrap");
+    }
+    PASS();
+}
+
+void test_utf8_wide_overwrite(void) {
+    TEST("utf8_wide_overwrite");
+    
+    /* Overwrite the right half of a wide character: "日本" then BS, 'x' */
+    if (!utf8_row_is(10, "\xe6\x97\xa5\xe6\x9c\xac\x1b[1Dx", 0, "\xe6\x97\xa5 x")) {
+        FAIL("overwriting the right half should blank the left half");
+    }
+    /* Overwrite the left half: CR, 'x' */
+    if (!utf8_row_is(10, "\xe6\x97\xa5\xe6\x9c\xac\rx", 0, "x \xe6\x9c\xac")) {
+        FAIL("overwriting the left half should blank the right half");
+    }
+    /* Erase from the middle of a wide character */
+    if (!utf8_row_is(10, "a\xe6\x97\xa5" "b\x1b[1;3H\x1b[K", 0, "a")) {
+        FAIL("erase starting inside a wide character should remove it");
+    }
+    PASS();
+}
+
+void test_utf8_invalid(void) {
+    TEST("utf8_invalid");
+    
+    /* Stray continuation byte, 0xFF */
+    if (!utf8_row_is(10, "a\x80" "b\xff" "c", 0, "a\xef\xbf\xbd" "b\xef\xbf\xbd" "c")) {
+        FAIL("stray bytes should print U+FFFD");
+    }
+    /* Truncated sequence followed by ASCII: the ASCII byte must survive */
+    if (!utf8_row_is(10, "\xe2\x94" "A", 0, "\xef\xbf\xbd" "A")) {
+        FAIL("truncated sequence should print U+FFFD then continue");
+    }
+    /* Overlong encoding of NUL and of '/' */
+    if (!utf8_row_is(10, "\xc0\x80\xe0\x80\xaf", 0, "\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd")) {
+        FAIL("overlong encodings should be rejected");
+    }
+    /* UTF-16 surrogate U+D800 (ED A0 80) */
+    if (!utf8_row_is(10, "\xed\xa0\x80" "z", 0, "\xef\xbf\xbd" "z")) {
+        FAIL("surrogates should be rejected");
+    }
+    /* Escape sequence interrupts a partial character */
+    if (!utf8_row_is(10, "\xe2\x94\x1b[1;4Hq", 0, "\xef\xbf\xbd  q")) {
+        FAIL("escape sequence should end a partial character");
+    }
+    PASS();
+}
+
+void test_utf8_output_bounds(void) {
+    TEST("utf8_output_bounds");
+    
+    screen_buffer_t *screen = screen_buffer_create(2, 10, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "\xc3\xa9\xc3\xa9\xc3\xa9");
+    
+    /* 5 bytes hold two 2-byte characters + NUL; never half of one */
+    char small[5];
+    memset(small, 'Z', sizeof(small));
+    size_t n = screen_buffer_get_line(screen, 0, small, sizeof(small));
+    if (n != 4 || strcmp(small, "\xc3\xa9\xc3\xa9") != 0) {
+        screen_buffer_destroy(screen);
+        FAIL("line should be cut on a character boundary");
+    }
+    
+    char text[4];
+    n = screen_buffer_get_text(screen, text, sizeof(text));
+    if (n != 3 || strcmp(text, "\xc3\xa9\n") != 0) {
+        screen_buffer_destroy(screen);
+        FAIL("text should be cut on a character boundary");
+    }
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
+void test_utf8_scrollback(void) {
+    TEST("utf8_scrollback");
+    
+    screen_buffer_t *screen = screen_buffer_create(2, 6, 5);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "\xe2\x94\x82hi\xe6\x97\xa5\r\nline2\r\nline3\r\n");
+    
+    const char_cell_t *cells = screen_buffer_get_scrollback_line(screen, 0);
+    if (!cells) {
+        screen_buffer_destroy(screen);
+        FAIL("no scrollback line");
+    }
+    char line[64];
+    screen_buffer_cells_to_utf8(cells, screen->cols, line, sizeof(line));
+    size_t len = strlen(line);
+    while (len > 0 && line[len - 1] == ' ') line[--len] = '\0';
+    if (strcmp(line, "\xe2\x94\x82hi\xe6\x97\xa5") != 0) {
+        screen_buffer_destroy(screen);
+        FAIL("scrollback line not UTF-8");
+    }
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
+
 
 int main(void) {
     printf("=== Terminal Emulation Tests ===\n\n");
@@ -425,6 +594,15 @@ int main(void) {
     test_screen_buffer_erase();
     test_screen_buffer_process_sequence();
     test_screen_buffer_resize_scrollback();
+    /* UTF-8 */
+    test_utf8_decode();
+    test_utf8_cursor_and_width();
+    test_utf8_wide_overwrite();
+    test_utf8_invalid();
+    test_utf8_output_bounds();
+    test_utf8_scrollback();
+    
+
     
     printf("\n=== Results ===\n");
     printf("Passed: %d\n", tests_passed);

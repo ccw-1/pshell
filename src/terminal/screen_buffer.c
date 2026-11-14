@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdint.h>
+#include "pshell/utf8.h"
 
 /* Helper: Get cell pointer */
 static inline char_cell_t *get_cell(screen_buffer_t *screen, int row, int col) {
@@ -19,6 +19,31 @@ static inline void clear_cell(char_cell_t *cell) {
     memset(&cell->attr, 0, sizeof(cell->attr));
     cell->attr.fg_color = COLOR_DEFAULT;
     cell->attr.bg_color = COLOR_DEFAULT;
+}
+
+/* Helper: Before overwriting (row, col), blank the other half of a
+ * double-width character that the write would otherwise leave orphaned. */
+static void break_wide(screen_buffer_t *screen, int row, int col) {
+    char_cell_t *cell = get_cell(screen, row, col);
+    if (!cell) return;
+    if (cell->ch == CELL_CONTINUATION) {
+        char_cell_t *prev = get_cell(screen, row, col - 1);
+        if (prev) clear_cell(prev);
+    }
+    char_cell_t *next = get_cell(screen, row, col + 1);
+    if (next && next->ch == CELL_CONTINUATION) clear_cell(next);
+}
+
+/* Helper: An erase of columns [from, to] must not leave half a wide
+ * character at either edge. */
+static void fix_wide_edges(screen_buffer_t *screen, int row, int from, int to) {
+    char_cell_t *first = get_cell(screen, row, from);
+    if (first && first->ch == CELL_CONTINUATION) {
+        char_cell_t *lead = get_cell(screen, row, from - 1);
+        if (lead) clear_cell(lead);
+    }
+    char_cell_t *after = get_cell(screen, row, to + 1);
+    if (after && after->ch == CELL_CONTINUATION) clear_cell(after);
 }
 
 /* Helper: Clamp cursor to screen bounds */
@@ -236,34 +261,113 @@ void screen_buffer_clear(screen_buffer_t *screen) {
     screen->cursor.attr.bg_color = COLOR_DEFAULT;
 }
 
-void screen_buffer_put_char(screen_buffer_t *screen, char ch) {
+/* Helper: Move to the start of the next line (auto-wrap), scrolling at the
+ * bottom of the scroll region. */
+static void wrap_to_next_line(screen_buffer_t *screen) {
+    screen->cursor.col = 0;
+    screen->cursor.row++;
+    if (screen->cursor.row > screen->scroll_bottom) {
+        screen_buffer_scroll_up(screen, 1);
+        screen->cursor.row = screen->scroll_bottom;
+    }
+}
+
+void screen_buffer_put_codepoint(screen_buffer_t *screen, uint32_t cp) {
+    int width = utf8_cp_width(cp);
+    if (width == 0) return;     /* combining / zero-width: nothing to draw */
+    if (width == 2 && screen->cols < 2) {
+        cp = '?';
+        width = 1;
+    }
+    
+    /* A wide character does not fit in the last column: wrap first */
+    if (width == 2 && screen->cursor.col == screen->cols - 1) {
+        if (!screen->auto_wrap) return;
+        wrap_to_next_line(screen);
+    }
+    
     char_cell_t *cell = get_cell(screen, screen->cursor.row, screen->cursor.col);
     if (!cell) return;
     
     /* Insert mode: shift characters right */
-    if (screen->insert_mode && screen->cursor.col < screen->cols - 1) {
-        memmove(cell + 1, cell, (screen->cols - screen->cursor.col - 1) * sizeof(char_cell_t));
+    if (screen->insert_mode && screen->cursor.col < screen->cols - width) {
+        memmove(cell + width, cell,
+                (screen->cols - screen->cursor.col - width) * sizeof(char_cell_t));
+    }
+    
+    /* Do not leave half of an overwritten wide character behind */
+    break_wide(screen, screen->cursor.row, screen->cursor.col);
+    if (width == 2) {
+        break_wide(screen, screen->cursor.row, screen->cursor.col + 1);
     }
     
     /* Write character */
-    cell->ch = ch;
+    cell->ch = cp;
     cell->attr = screen->cursor.attr;
+    if (width == 2) {
+        char_cell_t *right = get_cell(screen, screen->cursor.row, screen->cursor.col + 1);
+        right->ch = CELL_CONTINUATION;
+        right->attr = screen->cursor.attr;
+    }
     
     /* Advance cursor */
-    screen->cursor.col++;
+    screen->cursor.col += width;
     
     /* Handle wrap */
     if (screen->cursor.col >= screen->cols) {
         if (screen->auto_wrap) {
-            screen->cursor.col = 0;
-            screen->cursor.row++;
-            if (screen->cursor.row > screen->scroll_bottom) {
-                screen_buffer_scroll_up(screen, 1);
-                screen->cursor.row = screen->scroll_bottom;
-            }
+            wrap_to_next_line(screen);
         } else {
             screen->cursor.col = screen->cols - 1;
         }
+    }
+}
+
+/* Helper: Abandon a partially received UTF-8 sequence */
+static void utf8_flush(screen_buffer_t *screen) {
+    if (screen->utf8_need > 0) {
+        screen->utf8_need = 0;
+        screen_buffer_put_codepoint(screen, UTF8_REPLACEMENT);
+    }
+}
+
+void screen_buffer_put_char(screen_buffer_t *screen, char ch) {
+    unsigned char b = (unsigned char)ch;
+    
+    if (screen->utf8_need > 0) {
+        if ((b & 0xC0) == 0x80) {
+            screen->utf8_cp = (screen->utf8_cp << 6) | (b & 0x3F);
+            if (--screen->utf8_need == 0) {
+                uint32_t cp = screen->utf8_cp;
+                if (cp < screen->utf8_min || cp > 0x10FFFF ||
+                    (cp >= 0xD800 && cp <= 0xDFFF)) {
+                    cp = UTF8_REPLACEMENT;   /* overlong, surrogate, out of range */
+                }
+                screen_buffer_put_codepoint(screen, cp);
+            }
+            return;
+        }
+        /* Truncated sequence: replace it, then handle this byte afresh */
+        utf8_flush(screen);
+    }
+    
+    if (b < 0x80) {
+        screen_buffer_put_codepoint(screen, b);
+    } else if (b >= 0xC2 && b <= 0xDF) {
+        screen->utf8_need = 1;
+        screen->utf8_cp = b & 0x1F;
+        screen->utf8_min = 0x80;
+    } else if (b >= 0xE0 && b <= 0xEF) {
+        screen->utf8_need = 2;
+        screen->utf8_cp = b & 0x0F;
+        screen->utf8_min = 0x800;
+    } else if (b >= 0xF0 && b <= 0xF4) {
+        screen->utf8_need = 3;
+        screen->utf8_cp = b & 0x07;
+        screen->utf8_min = 0x10000;
+    } else {
+        /* Stray continuation byte, C0/C1 or F5..FF */
+        screen_buffer_put_codepoint(screen, UTF8_REPLACEMENT);
     }
 }
 
@@ -331,6 +435,7 @@ void screen_buffer_erase_display(screen_buffer_t *screen, int mode) {
     for (int r = start_row; r <= end_row; r++) {
         int sc = (r == start_row) ? start_col : 0;
         int ec = (r == end_row) ? end_col : screen->cols - 1;
+        fix_wide_edges(screen, r, sc, ec);
         for (int c = sc; c <= ec; c++) {
             char_cell_t *cell = get_cell(screen, r, c);
             if (cell) clear_cell(cell);
@@ -358,6 +463,7 @@ void screen_buffer_erase_line(screen_buffer_t *screen, int mode) {
             return;
     }
     
+    fix_wide_edges(screen, screen->cursor.row, start_col, end_col);
     for (int c = start_col; c <= end_col; c++) {
         char_cell_t *cell = get_cell(screen, screen->cursor.row, c);
         if (cell) clear_cell(cell);
@@ -549,6 +655,11 @@ void screen_buffer_clear_tab(screen_buffer_t *screen) {
 }
 
 void screen_buffer_process_sequence(screen_buffer_t *screen, const vt100_sequence_t *seq) {
+    /* Anything but more text interrupts a partial UTF-8 character */
+    if (seq->type != VT100_SEQ_PRINT) {
+        utf8_flush(screen);
+    }
+    
     switch (seq->type) {
         case VT100_SEQ_PRINT:
             if (seq->text_len > 0) {
@@ -639,18 +750,29 @@ const char_cell_t *screen_buffer_get_cell(const screen_buffer_t *screen, int row
     return &screen->cells[row * screen->cols + col];
 }
 
+size_t screen_buffer_cells_to_utf8(const char_cell_t *cells, int count, char *buffer, size_t size) {
+    if (!buffer || size == 0) return 0;
+    
+    size_t pos = 0;
+    for (int c = 0; c < count; c++) {
+        if (cells[c].ch == CELL_CONTINUATION) continue;
+        char enc[UTF8_MAX_BYTES];
+        size_t len = utf8_encode(cells[c].ch, enc);
+        if (pos + len >= size) break;   /* keep room for the NUL */
+        memcpy(buffer + pos, enc, len);
+        pos += len;
+    }
+    buffer[pos] = '\0';
+    return pos;
+}
+
 size_t screen_buffer_get_line(const screen_buffer_t *screen, int row, char *buffer, size_t size) {
     if (row < 0 || row >= screen->rows || !buffer || size == 0) {
         return 0;
     }
     
-    size_t pos = 0;
-    for (int c = 0; c < screen->cols && pos < size - 1; c++) {
-        const char_cell_t *cell = &screen->cells[row * screen->cols + c];
-        buffer[pos++] = cell->ch;
-    }
-    buffer[pos] = '\0';
-    return pos;
+    return screen_buffer_cells_to_utf8(&screen->cells[(size_t)row * screen->cols],
+                                       screen->cols, buffer, size);
 }
 
 size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_t size) {
@@ -658,19 +780,17 @@ size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_
     
     size_t pos = 0;
     for (int r = 0; r < screen->rows && pos < size - 1; r++) {
+        const char_cell_t *row_cells = &screen->cells[(size_t)r * screen->cols];
+        
         /* Find last non-space character in this row */
         int last_col = screen->cols - 1;
-        while (last_col >= 0) {
-            const char_cell_t *cell = &screen->cells[r * screen->cols + last_col];
-            if (cell->ch != ' ') break;
+        while (last_col >= 0 && row_cells[last_col].ch == ' ') {
             last_col--;
         }
         
         /* Copy characters up to last non-space (or empty line) */
-        for (int c = 0; c <= last_col && pos < size - 1; c++) {
-            const char_cell_t *cell = &screen->cells[r * screen->cols + c];
-            buffer[pos++] = cell->ch;
-        }
+        pos += screen_buffer_cells_to_utf8(row_cells, last_col + 1,
+                                           buffer + pos, size - pos);
         
         /* Add newline after each row */
         if (pos < size - 1) {

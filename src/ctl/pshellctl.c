@@ -470,6 +470,8 @@ static int cmd_output(socket_client_t *client, int argc, char **argv) {
     return 0;
 }
 
+#define SCREEN_RESPONSE_SIZE 262144
+
 static int cmd_screen(socket_client_t *client, int argc, char **argv) {
     if (argc < 1) {
         fprintf(stderr, "Usage: screen <session-id>\n");
@@ -484,15 +486,21 @@ static int cmd_screen(socket_client_t *client, int argc, char **argv) {
              "{\"method\":\"get_screen\",\"params\":{\"id\":\"%s\"}}",
              session_id);
     
-    /* Send request */
-    char response[8192];
-    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+    /* Send request (the screen text is UTF-8, so allow for large screens) */
+    char *response = malloc(SCREEN_RESPONSE_SIZE);
+    if (!response) {
+        fprintf(stderr, "Out of memory\n");
+        return 1;
+    }
+    if (socket_client_send_request(client, request, response, SCREEN_RESPONSE_SIZE) < 0) {
         fprintf(stderr, "Failed to send request\n");
+        free(response);
         return 1;
     }
     
     /* Parse response */
     json_value_t *root = json_parse(response);
+    free(response);
     if (!root) {
         fprintf(stderr, "Failed to parse response\n");
         return 1;

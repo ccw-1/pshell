@@ -158,11 +158,17 @@
   - Solution: Per-context buffers or operation queuing
   - Impact: Medium - limits automation scenarios
 
-- [ ] **UTF-8 aware screen buffer**
-  - Current: `screen_buffer_put_char` stores one byte per cell
-  - Issue: multi-byte characters (box drawing, accents) show as `�` in `pshell_screen`; TUI redraws drift
-  - Solution: decode UTF-8 in the VT100 parser, store code points per cell
-  - Impact: Medium - affects TUI applications (Bob Shell etc.)
+- [ ] **Screen buffer: combining characters and grapheme clusters**
+  - Current: UTF-8 is decoded (code point per cell, double-width = 2 cells), but zero-width code points (combining marks, ZWJ, variation selectors) are dropped
+  - Issue: emoji sequences / decomposed accents lose their modifiers
+  - Solution: attach combining code points to the previous cell
+  - Impact: Low
+
+- [ ] **`pshellctl send` does not JSON-escape the text**
+  - Current: text containing `"` or `\` is pasted into the request unescaped
+  - Issue: `pshellctl send ID 'echo "x"\n'` fails with "Failed to send text"
+  - Solution: escape the text (as `pshell_send` in the MCP server does)
+  - Impact: Medium
 
 - [ ] **`pshellctl attach` limitations**
   - Output is dropped for a terminal that cannot keep up; max 4 terminals per session

@@ -13,6 +13,12 @@ The current version is defined in [VERSION](VERSION) and `include/pshell/version
 
 - `pshellctl attach <session-id>`: interactive terminal on a session over the Unix socket (no HTTP). The `attach_session` socket method replies normally, then the connection becomes a raw byte stream owned by the session (client input to the PTY, PTY output to up to 4 attached clients, screen redraw on attach). The session is resized to the attaching terminal (also on SIGWINCH); `Ctrl-]` detaches. Test: `tests/integration/test_attach.py`.
 
+### Changed
+
+- The screen buffer is now UTF-8 aware. Cells hold Unicode code points instead of one byte, so box drawing, accents, CJK and emoji survive in `pshell_screen`, `pshellctl screen`, scrollback and the `attach` redraw (previously every non-ASCII byte showed as `�`/was dropped, and TUI redraws such as Bob Shell drifted). Double-width characters occupy two cells (the right half is a continuation cell, kept consistent on overwrite and erase), combining/zero-width code points are dropped, invalid or truncated UTF-8 prints U+FFFD, and a partial sequence is abandoned when an escape sequence arrives. New `utf8.c`/`utf8.h` (encode, column width).
+- Screen text is returned in buffers sized from the session (4 bytes per cell): the socket `get_screen` and REST screen handlers no longer cap at 4-8 KB, and `send_success` allocates the response (the 8 KB limit made screens above roughly 8000 bytes fail with "Response too large"). `pshellctl screen` reads up to 256 KB.
+- Tests: `test_terminal.c` (decoder, widths, wide overwrite/erase, invalid input, truncation, scrollback) and `tests/integration/test_utf8.py`.
+
 ### Fixed
 
 - Daemon segfault (heap overflow) after a session was resized wider: `screen_buffer_resize` kept the scrollback allocated for the old column count, so lines scrolling off a wider screen overflowed it. The scrollback is now rebuilt at the new width (order preserved). Surfaced by `pshellctl attach`, which resizes the session to the attaching terminal; `pshellctl resize` hit the same bug. Regression test in `tests/unit/test_terminal.c` (run under ASAN).
@@ -20,8 +26,8 @@ The current version is defined in [VERSION](VERSION) and `include/pshell/version
 
 ### Documentation
 
-- `docs/MCP_SERVER.md`, `docs/ESCAPE_SEQUENCES.md`: driving full-screen (TUI) applications. Send text and `\r` as separate `pshell_send` calls, otherwise the TUI treats the burst as a paste. Documented the screen buffer's lack of UTF-8 support.
-- `docs/MAINTENANCE.md`: `pshellctl attach`. `TODO.md`: UTF-8 screen buffer and attach limitations.
+- `docs/MCP_SERVER.md`, `docs/ESCAPE_SEQUENCES.md`: driving full-screen (TUI) applications. Send text and `\r` as separate `pshell_send` calls, otherwise the TUI treats the burst as a paste.
+- `docs/MAINTENANCE.md`: `pshellctl attach`. `TODO.md`: attach limitations.
 
 ## [1.2.0] - 2026-10-14
 

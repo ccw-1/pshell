@@ -77,7 +77,7 @@ Other tips:
 
 - `\cU` clears the current input line; `\e` (ESC) closes dialogs and overlays.
 - Use `pshell_screen` (not `pshell_read_output`) to see what a TUI shows now; `pshell_read_output` returns the raw redraw stream.
-- Known limitation: the screen buffer stores one byte per cell and is not UTF-8 aware. Multi-byte characters (box drawing, accents) appear as `�` in `pshell_screen`, and cursor-relative redraws can leave stale fragments. See [TODO.md](../TODO.md).
+- The screen buffer is UTF-8 aware: box drawing, accents, CJK and emoji appear in `pshell_screen` and `pshell_scrollback` and cursor movement counts columns, not bytes. Double-width characters (CJK, emoji) take two columns; combining marks (accents written as a separate code point) are dropped; invalid UTF-8 shows as U+FFFD. Cell attributes (colour, bold) are tracked but not returned.
 
 To watch or type into a session yourself from a local terminal (no HTTP), use `pshellctl attach <session-id>` (`Ctrl-]` detaches).
 

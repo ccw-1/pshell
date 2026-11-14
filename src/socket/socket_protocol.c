@@ -9,6 +9,7 @@
 #include "pshell/session.h"
 #include "pshell/expect_engine.h"
 #include "pshell/logger.h"
+#include "pshell/utf8.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -127,15 +128,24 @@ send_it:
 }
 
 static void send_success(socket_connection_t *conn, const char *result) {
-    char response[8192];
-    int n = snprintf(response, sizeof(response),
-                     "{\"status\":\"success\",\"result\":%s}",
-                     result ? result : "{}");
-    if (n < 0 || (size_t)n >= sizeof(response)) {
+    /* Sized from the result: a UTF-8 screen snapshot can exceed any small
+     * fixed buffer (3-4 bytes per cell). */
+    const char *body = result ? result : "{}";
+    static const char prefix[] = "{\"status\":\"success\",\"result\":";
+    size_t cap = sizeof(prefix) + strlen(body) + 2;
+    char *response = malloc(cap);
+    if (!response) {
+        send_error(conn, "Out of memory");
+        return;
+    }
+    int n = snprintf(response, cap, "%s%s}", prefix, body);
+    if (n < 0 || (size_t)n >= cap) {
+        free(response);
         send_error(conn, "Response too large");
         return;
     }
     send_response(conn, response);
+    free(response);
 }
 
 void socket_protocol_handler(socket_connection_t *conn, const char *message, void *user_data) {
@@ -488,9 +498,25 @@ static void handle_get_screen(socket_connection_t *conn, json_value_t *params, s
         return;
     }
     
-    /* Get screen */
-    char screen[4096];
-    size_t bytes = session_get_screen_text(session, screen, sizeof(screen) - 1);
+    /* Get screen: the text is UTF-8, up to UTF8_MAX_BYTES per cell plus a
+     * newline per row */
+    session_info_t info;
+    if (!session_get_info(session, &info) || info.rows <= 0 || info.cols <= 0) {
+        send_error(conn, "Session not available");
+        return;
+    }
+    size_t screen_cap = (size_t)info.rows * ((size_t)info.cols * UTF8_MAX_BYTES + 1) + 1;
+    char *screen = malloc(screen_cap);
+    /* JSON escaping at most doubles a byte (\n, \", \\) */
+    size_t result_cap = screen_cap * 2 + 128;
+    char *result = malloc(result_cap);
+    if (!screen || !result) {
+        free(screen);
+        free(result);
+        send_error(conn, "Out of memory");
+        return;
+    }
+    size_t bytes = session_get_screen_text(session, screen, screen_cap - 1);
     screen[bytes] = '\0';
     
     /* Get cursor position */
@@ -498,17 +524,17 @@ static void handle_get_screen(socket_connection_t *conn, json_value_t *params, s
     session_get_cursor_position(session, &cursor_row, &cursor_col);
     
     /* Build response */
-    char result[8192];
-    int offset = snprintf(result, sizeof(result), "{\"text\":\"");
+    size_t offset = (size_t)snprintf(result, result_cap, "{\"text\":\"");
     
-    for (size_t i = 0; i < bytes && offset < (int)sizeof(result) - 100; i++) {
+    for (size_t i = 0; i < bytes && offset < result_cap - 128; i++) {
         switch (screen[i]) {
-            case '\n': offset += snprintf(result + offset, sizeof(result) - offset, "\\n"); break;
-            case '\r': offset += snprintf(result + offset, sizeof(result) - offset, "\\r"); break;
-            case '\t': offset += snprintf(result + offset, sizeof(result) - offset, "\\t"); break;
-            case '"': offset += snprintf(result + offset, sizeof(result) - offset, "\\\""); break;
-            case '\\': offset += snprintf(result + offset, sizeof(result) - offset, "\\\\"); break;
+            case '\n': result[offset++] = '\\'; result[offset++] = 'n'; break;
+            case '\r': result[offset++] = '\\'; result[offset++] = 'r'; break;
+            case '\t': result[offset++] = '\\'; result[offset++] = 't'; break;
+            case '"':  result[offset++] = '\\'; result[offset++] = '"'; break;
+            case '\\': result[offset++] = '\\'; result[offset++] = '\\'; break;
             default:
+                /* Control characters are dropped; bytes >= 0x80 are UTF-8 */
                 if ((unsigned char)screen[i] >= 32) {
                     result[offset++] = screen[i];
                 }
@@ -516,11 +542,13 @@ static void handle_get_screen(socket_connection_t *conn, json_value_t *params, s
         }
     }
     
-    snprintf(result + offset, sizeof(result) - offset,
+    snprintf(result + offset, result_cap - offset,
              "\",\"cursor_row\":%d,\"cursor_col\":%d,\"bytes\":%zu}",
              cursor_row, cursor_col, bytes);
     
     send_success(conn, result);
+    free(screen);
+    free(result);
 }
 
 static void handle_resize_session(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {

@@ -4,6 +4,7 @@
 #include "pshell/vt100_parser.h"
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /**
  * Screen Buffer Management
@@ -40,9 +41,12 @@ typedef struct {
 #define COLOR_CYAN    7
 #define COLOR_WHITE   8
 
+/* Cell value of the right half of a double-width character */
+#define CELL_CONTINUATION 0
+
 /* Character cell */
 typedef struct {
-    char ch;              /* Character (UTF-8 first byte) */
+    uint32_t ch;          /* Unicode code point (CELL_CONTINUATION = 2nd column of a wide char) */
     char_attr_t attr;     /* Character attributes */
 } char_cell_t;
 
@@ -86,6 +90,11 @@ typedef struct {
     bool auto_wrap;       /* Auto wrap at end of line */
     bool origin_mode;     /* Origin mode (cursor addressing) */
     bool insert_mode;     /* Insert mode */
+    
+    /* UTF-8 decoder state (bytes arrive one at a time) */
+    uint32_t utf8_cp;     /* Code point being assembled */
+    uint32_t utf8_min;    /* Smallest valid value (rejects overlong forms) */
+    int utf8_need;        /* Continuation bytes still expected */
 } screen_buffer_t;
 
 /**
@@ -121,16 +130,25 @@ void screen_buffer_process_sequence(screen_buffer_t *screen, const vt100_sequenc
 const char_cell_t *screen_buffer_get_cell(const screen_buffer_t *screen, int row, int col);
 
 /**
- * Get a line of text (for rendering or output)
- * Returns number of characters written to buffer
+ * Get a line of text (for rendering or output) as UTF-8.
+ * Returns number of bytes written to buffer (NUL terminated).
+ * A line needs up to cols * UTF8_MAX_BYTES + 1 bytes.
  */
 size_t screen_buffer_get_line(const screen_buffer_t *screen, int row, char *buffer, size_t size);
 
 /**
- * Get entire screen as text (for debugging or snapshots)
- * Returns number of characters written
+ * Get entire screen as UTF-8 text (for debugging or snapshots)
+ * Returns number of bytes written. The text needs up to
+ * rows * (cols * UTF8_MAX_BYTES + 1) + 1 bytes.
  */
 size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_t size);
+
+/**
+ * Encode the cells of a line (screen or scrollback row) as UTF-8.
+ * Continuation cells (right half of a wide character) are skipped. Stops
+ * before overflowing size. Returns the bytes written (NUL terminated).
+ */
+size_t screen_buffer_cells_to_utf8(const char_cell_t *cells, int count, char *buffer, size_t size);
 
 /**
  * Get scrollback line
@@ -155,9 +173,16 @@ void screen_buffer_set_cursor(screen_buffer_t *screen, int row, int col);
 bool screen_buffer_is_cursor_visible(const screen_buffer_t *screen);
 
 /**
- * Print character at cursor position and advance cursor
+ * Feed one output byte. ASCII is printed directly; bytes >= 0x80 are
+ * assembled as UTF-8 (invalid input prints U+FFFD).
  */
 void screen_buffer_put_char(screen_buffer_t *screen, char ch);
+
+/**
+ * Print a Unicode code point at the cursor position and advance the cursor
+ * (two columns for wide characters, none for combining characters)
+ */
+void screen_buffer_put_codepoint(screen_buffer_t *screen, uint32_t cp);
 
 /**
  * Move cursor up

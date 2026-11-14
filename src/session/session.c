@@ -5,6 +5,7 @@
 #include "pshell/logger.h"
 #include "pshell/vt100_parser.h"
 #include "pshell/screen_buffer.h"
+#include "pshell/utf8.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -677,7 +678,8 @@ bool session_attach_client(session_t *session, int fd) {
 void session_attach_redraw(session_t *session, int fd) {
     if (!session || !session->screen) return;
     
-    size_t cap = (size_t)session->rows * ((size_t)session->cols + 2) + 64;
+    /* Up to UTF8_MAX_BYTES per cell plus a newline per row */
+    size_t cap = (size_t)session->rows * ((size_t)session->cols * UTF8_MAX_BYTES + 2) + 64;
     char *text = malloc(cap);
     char *out = malloc(cap * 2 + 64);
     if (!text || !out) {
@@ -1722,15 +1724,6 @@ ssize_t session_get_scrollback_line(const session_t *session, int line_index, ch
     const char_cell_t *line = screen_buffer_get_scrollback_line(session->screen, line_index);
     if (!line) return -1;
     
-    /* Convert cells to text */
-    size_t pos = 0;
-    for (int col = 0; col < session->screen->cols && pos < size - 1; col++) {
-        char ch = line[col].ch;
-        if (ch >= 32 || ch == '\t') {
-            buffer[pos++] = ch;
-        }
-    }
-    buffer[pos] = '\0';
-    
-    return pos;
+    /* Convert cells to UTF-8 text */
+    return (ssize_t)screen_buffer_cells_to_utf8(line, session->screen->cols, buffer, size);
 }

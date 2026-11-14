@@ -796,18 +796,36 @@ static void handle_get_screen(http_request_t *req, http_response_t *resp, void *
         return;
     }
     
-    /* Get screen text */
-    char screen_text[8192];
-    size_t text_len = session_get_screen_text(session, screen_text, sizeof(screen_text));
+    /* Get screen text (UTF-8: up to 4 bytes per cell plus a newline per row) */
+    session_info_t info;
+    if (!session_get_info(session, &info) || info.rows <= 0 || info.cols <= 0) {
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Session not available");
+        return;
+    }
+    size_t text_cap = (size_t)info.rows * ((size_t)info.cols * 4 + 1) + 1;
+    size_t escaped_cap = text_cap * 2 + 16;
+    size_t response_cap = escaped_cap + 128;
+    char *screen_text = malloc(text_cap);
+    char *escaped = malloc(escaped_cap);
+    char *response = malloc(response_cap);
+    if (!screen_text || !escaped || !response) {
+        free(screen_text);
+        free(escaped);
+        free(response);
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Out of memory");
+        return;
+    }
+    size_t text_len = session_get_screen_text(session, screen_text, text_cap);
     
     /* Get cursor position */
     int cursor_row, cursor_col;
     session_get_cursor_position(session, &cursor_row, &cursor_col);
     
     /* Escape screen text for JSON */
-    char escaped[16384];
     size_t j = 0;
-    for (size_t i = 0; i < text_len && j < sizeof(escaped) - 7; i++) {
+    for (size_t i = 0; i < text_len && j < escaped_cap - 7; i++) {
         switch (screen_text[i]) {
             case '"':  escaped[j++] = '\\'; escaped[j++] = '"'; break;
             case '\\': escaped[j++] = '\\'; escaped[j++] = '\\'; break;
@@ -819,7 +837,7 @@ static void handle_get_screen(http_request_t *req, http_response_t *resp, void *
             default:
                 if ((unsigned char)screen_text[i] < 32) {
                     /* Control character - escape as unicode */
-                    j += snprintf(escaped + j, sizeof(escaped) - j, "\\u%04x", (unsigned char)screen_text[i]);
+                    j += snprintf(escaped + j, escaped_cap - j, "\\u%04x", (unsigned char)screen_text[i]);
                 } else {
                     escaped[j++] = screen_text[i];
                 }
@@ -829,17 +847,19 @@ static void handle_get_screen(http_request_t *req, http_response_t *resp, void *
     escaped[j] = '\0';
     
     /* Build JSON response */
-    char response[32768];
-    int len = snprintf(response, sizeof(response),
+    int len = snprintf(response, response_cap,
                       "{\"text\":\"%s\",\"cursor_row\":%d,\"cursor_col\":%d,\"bytes\":%d}",
                       escaped, cursor_row, cursor_col, (int)text_len);
     
-    if (len > 0 && len < (int)sizeof(response)) {
+    if (len > 0 && (size_t)len < response_cap) {
         http_response_send_json(resp, HTTP_STATUS_OK, response);
     } else {
         http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to build response");
     }
     
+    free(screen_text);
+    free(escaped);
+    free(response);
     log_debug("Get screen from session: %s (cursor: %d,%d)", session_id, cursor_row, cursor_col);
     free(session_id);
 }
