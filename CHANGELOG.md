@@ -22,6 +22,8 @@ The current version is defined in [VERSION](VERSION) and `include/pshell/version
 
 ### Fixed
 
+- `pshellctl send` and `pshellctl create` did not JSON-escape their arguments, so text containing `"` or `\` failed (`Failed to send text`) or was mangled. Added `str_json_escape()` (`string_utils`); `send` (text, id) and `create` (`--command`, `--output`) now escape. `expect`/`expect-incoming` patterns are unchanged (existing scripts pass pre-escaped patterns).
+- The `command` field in socket and REST session responses (create, list, info) was not escaped, so a command containing `"` produced invalid JSON and `pshellctl create` reported "Failed to parse response". Test: `tests/integration/test_send_escape.py`.
 - Daemon segfault (heap overflow) after a session was resized wider: `screen_buffer_resize` kept the scrollback allocated for the old column count, so lines scrolling off a wider screen overflowed it. The scrollback is now rebuilt at the new width (order preserved). Surfaced by `pshellctl attach`, which resizes the session to the attaching terminal; `pshellctl resize` hit the same bug. Regression test in `tests/unit/test_terminal.c` (run under ASAN).
 - Daemon deadlock when a session's process exited: `session_manager_cleanup_dead_sessions` held `mgr->lock` while calling `session_manager_destroy_session`, which locks it again.
 

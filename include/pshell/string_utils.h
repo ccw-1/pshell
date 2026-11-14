@@ -167,4 +167,17 @@ int str_format(char *buf, size_t size, const char *fmt, ...);
  */
 size_t str_unescape(char *dst, size_t dst_cap, const char *src);
 
+/**
+ * Escape a string for use inside a JSON string literal: " and \\ are
+ * backslash-escaped, \n \r \t use their short forms, other control
+ * characters become \u00XX. Bytes >= 0x80 (UTF-8) are copied unchanged.
+ * @param dst Destination buffer (NUL-terminated); output is truncated at an
+ *            escape boundary if it does not fit
+ * @param dst_cap Size of dst in bytes
+ * @param src String to escape (NULL is treated as "")
+ * @return Length of the escaped string (excluding the terminating NUL).
+ *         6 * strlen(src) + 1 bytes always suffice.
+ */
+size_t str_json_escape(char *dst, size_t dst_cap, const char *src);
+
 #endif /* PSHELL_STRING_UTILS_H */

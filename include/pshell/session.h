@@ -24,6 +24,9 @@ typedef enum {
     SESSION_STATE_DEAD
 } session_state_t;
 
+/* Room for a session command (up to 255 chars) with every character JSON-escaped */
+#define SESSION_COMMAND_JSON_MAX (255 * 6 + 1)
+
 /* Session info structure */
 typedef struct {
     char id[64];

@@ -39,6 +39,13 @@ static int safe_atoi(const char *str, int *out) {
     return 1;
 }
 
+/* Return a malloc'd JSON-string-escaped copy of s, or NULL on allocation failure */
+static char *json_escape_dup(const char *s) {
+    char *out = malloc(strlen(s) * 6 + 1);
+    if (out) str_json_escape(out, strlen(s) * 6 + 1, s);
+    return out;
+}
+
 /* Forward declarations */
 static void print_usage(const char *prog);
 static int cmd_create(socket_client_t *client, int argc, char **argv);
@@ -183,12 +190,23 @@ static int cmd_create(socket_client_t *client, int argc, char **argv) {
         }
     }
     
-    /* Build request with dynamic buffer to avoid truncation */
-    size_t request_size = 512 + (command ? strlen(command) : 0) +
-                          (output_file ? strlen(output_file) : 0);
+    /* Escape user text for JSON, then build the request in a dynamic buffer */
+    char *esc_command_buf = json_escape_dup(command);
+    char *esc_output_buf = output_file ? json_escape_dup(output_file) : NULL;
+    if (!esc_command_buf || (output_file && !esc_output_buf)) {
+        fprintf(stderr, "Failed to allocate request buffer\n");
+        free(esc_command_buf);
+        free(esc_output_buf);
+        return 1;
+    }
+    command = esc_command_buf;
+    output_file = esc_output_buf;
+    size_t request_size = 512 + strlen(command) + (output_file ? strlen(output_file) : 0);
     char *request = malloc(request_size);
     if (!request) {
         fprintf(stderr, "Failed to allocate request buffer\n");
+        free(esc_command_buf);
+        free(esc_output_buf);
         return 1;
     }
 
@@ -386,15 +404,35 @@ static int cmd_send(socket_client_t *client, int argc, char **argv) {
     char text_buf[4096];
     str_unescape(text_buf, sizeof(text_buf), argv[1]);
     
-    /* Build request */
-    char request[4096];
-    snprintf(request, sizeof(request),
+    /* Build request (text is JSON-escaped: it may contain quotes, backslashes
+     * and the control characters produced by the escapes above) */
+    char *esc_text = json_escape_dup(text_buf);
+    char *esc_id = json_escape_dup(session_id);
+    if (!esc_text || !esc_id) {
+        fprintf(stderr, "Failed to allocate request buffer\n");
+        free(esc_text);
+        free(esc_id);
+        return 1;
+    }
+    size_t request_size = strlen(esc_text) + strlen(esc_id) + 128;
+    char *request = malloc(request_size);
+    if (!request) {
+        fprintf(stderr, "Failed to allocate request buffer\n");
+        free(esc_text);
+        free(esc_id);
+        return 1;
+    }
+    snprintf(request, request_size,
              "{\"method\":\"send_text\",\"params\":{\"id\":\"%s\",\"text\":\"%s\"}}",
-             session_id, text_buf);
+             esc_id, esc_text);
+    free(esc_text);
+    free(esc_id);
     
     /* Send request */
     char response[1024];
-    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+    int send_rc = socket_client_send_request(client, request, response, sizeof(response));
+    free(request);
+    if (send_rc < 0) {
         fprintf(stderr, "Failed to send request\n");
         return 1;
     }

@@ -164,11 +164,11 @@
   - Solution: attach combining code points to the previous cell
   - Impact: Low
 
-- [ ] **`pshellctl send` does not JSON-escape the text**
-  - Current: text containing `"` or `\` is pasted into the request unescaped
-  - Issue: `pshellctl send ID 'echo "x"\n'` fails with "Failed to send text"
-  - Solution: escape the text (as `pshell_send` in the MCP server does)
-  - Impact: Medium
+- [ ] **`pshellctl expect` / `expect-incoming` do not JSON-escape the pattern**
+  - Current: the pattern is pasted into the request as is; docs/scripts pass pre-escaped patterns (`"\\$ "`)
+  - Issue: a pattern with `"` fails; escaping now would change the meaning of pre-escaped patterns
+  - Solution: escape in the client and document that patterns are plain regex text (breaking for existing scripts)
+  - Impact: Low
 
 - [ ] **`pshellctl attach` limitations**
   - Output is dropped for a terminal that cannot keep up; limit is `[sessions] max_attach` (default 16)

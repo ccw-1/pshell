@@ -270,10 +270,12 @@ static void handle_create_session(http_request_t *req, http_response_t *resp, vo
     }
     
     /* Build response */
-    char response[512];
+    char esc_command[SESSION_COMMAND_JSON_MAX];
+    str_json_escape(esc_command, sizeof(esc_command), command);
+    char response[SESSION_COMMAND_JSON_MAX + 256];
     snprintf(response, sizeof(response),
              "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"status\":\"active\"}",
-             session_id, command, rows, cols);
+             session_id, esc_command, rows, cols);
     /* Log before json_free: 'command' points into the JSON tree and would
      * be a dangling pointer after free. */
     log_info("Created session: id=%s, command=%s, rows=%d, cols=%d", session_id, command, rows, cols);
@@ -306,9 +308,11 @@ static void handle_list_sessions(http_request_t *req, http_response_t *resp, voi
          * the output is truncated and len must not grow further (otherwise
          * cap - len underflows and the next write goes out of bounds). */
         size_t rem = (len < cap) ? cap - len : 0;
+        char esc_command[SESSION_COMMAND_JSON_MAX];
+        str_json_escape(esc_command, sizeof(esc_command), infos[i].command);
         n = snprintf(response + len, rem, "%s{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
                      i > 0 ? "," : "",
-                     infos[i].id, infos[i].command, infos[i].rows, infos[i].cols, infos[i].pid,
+                     infos[i].id, esc_command, infos[i].rows, infos[i].cols, infos[i].pid,
                      infos[i].state == SESSION_STATE_ACTIVE ? "active" : "dead");
         if (n < 0 || (size_t)n >= rem) {
             /* Response full: report truncation instead of emitting invalid JSON */
@@ -371,10 +375,12 @@ static void handle_get_session(http_request_t *req, http_response_t *resp, void 
     session_line_no_t total_lines = session_get_total_lines(session);
     
     /* Build response */
-    char response[512];
+    char esc_command[SESSION_COMMAND_JSON_MAX];
+    str_json_escape(esc_command, sizeof(esc_command), info.command);
+    char response[SESSION_COMMAND_JSON_MAX + 256];
     snprintf(response, sizeof(response),
              "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\",\"total_lines\":%llu}",
-             info.id, info.command, info.rows, info.cols, info.pid,
+             info.id, esc_command, info.rows, info.cols, info.pid,
              info.state == SESSION_STATE_ACTIVE ? "active" : "dead",
              (unsigned long long)total_lines);
     

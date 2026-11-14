@@ -236,6 +236,34 @@ int str_format(char *buf, size_t size, const char *fmt, ...) {
     return written > 0 ? written : 0;
 }
 
+size_t str_json_escape(char *dst, size_t dst_cap, const char *src) {
+    if (!dst || dst_cap == 0) return 0;
+    if (!src) src = "";
+    size_t pos = 0;
+    for (const unsigned char *c = (const unsigned char *)src; *c; c++) {
+        char esc[8];
+        size_t n;
+        switch (*c) {
+            case '"':  memcpy(esc, "\\\"", 2); n = 2; break;
+            case '\\': memcpy(esc, "\\\\", 2); n = 2; break;
+            case '\n': memcpy(esc, "\\n", 2);  n = 2; break;
+            case '\r': memcpy(esc, "\\r", 2);  n = 2; break;
+            case '\t': memcpy(esc, "\\t", 2);  n = 2; break;
+            default:
+                if (*c < 0x20) {
+                    n = (size_t)snprintf(esc, sizeof(esc), "\\u%04x", *c);
+                } else {
+                    esc[0] = (char)*c;
+                    n = 1;
+                }
+        }
+        if (pos + n > dst_cap - 1) break;
+        memcpy(dst + pos, esc, n);
+        pos += n;
+    }
+    dst[pos] = '\0';
+    return pos;
+}
 
 /* Bounded single-byte write for str_unescape: never writes past dst_end
  * (the byte reserved for the terminating NUL). */

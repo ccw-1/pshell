@@ -10,6 +10,7 @@
 #include "pshell/expect_engine.h"
 #include "pshell/logger.h"
 #include "pshell/utf8.h"
+#include "pshell/string_utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -248,10 +249,12 @@ static void handle_create_session(socket_connection_t *conn, json_value_t *param
     }
     
     /* Build response */
-    char result[512];
+    char esc_command[SESSION_COMMAND_JSON_MAX];
+    str_json_escape(esc_command, sizeof(esc_command), command);
+    char result[SESSION_COMMAND_JSON_MAX + 256];
     snprintf(result, sizeof(result),
              "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d}",
-             session_id, command, rows, cols);
+             session_id, esc_command, rows, cols);
     
     send_success(conn, result);
 }
@@ -284,11 +287,13 @@ static void handle_list_sessions(socket_connection_t *conn, json_value_t *params
          * cap - len underflows and the next write goes out of bounds). */
         size_t rem = (len < cap) ? cap - len : 0;
         size_t before = len;
+        char esc_command[SESSION_COMMAND_JSON_MAX];
+        str_json_escape(esc_command, sizeof(esc_command), sessions[i].command);
         n = snprintf(result + len, rem,
                      "%s{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\"}",
                      i > 0 ? "," : "",
                      sessions[i].id,
-                     sessions[i].command,
+                     esc_command,
                      sessions[i].rows,
                      sessions[i].cols,
                      sessions[i].pid,
@@ -350,10 +355,12 @@ static void handle_get_session(socket_connection_t *conn, json_value_t *params, 
     session_line_no_t total_lines = session_get_total_lines(session);
     
     /* Build response */
-    char result[512];
+    char esc_command[SESSION_COMMAND_JSON_MAX];
+    str_json_escape(esc_command, sizeof(esc_command), info.command);
+    char result[SESSION_COMMAND_JSON_MAX + 256];
     snprintf(result, sizeof(result),
              "{\"id\":\"%s\",\"command\":\"%s\",\"rows\":%d,\"cols\":%d,\"pid\":%d,\"state\":\"%s\",\"total_lines\":%llu}",
-             info.id, info.command, info.rows, info.cols, info.pid, state_to_string(info.state), 
+             info.id, esc_command, info.rows, info.cols, info.pid, state_to_string(info.state), 
              (unsigned long long)total_lines);
     
     send_success(conn, result);
