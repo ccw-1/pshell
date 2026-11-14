@@ -428,7 +428,14 @@ int main(int argc, char **argv) {
         config_free(g_config);
         return 1;
     }
-    log_info("Session manager initialized (max_sessions=%d)", max_sessions);
+    int max_attach = config_get_int(g_config, "sessions", "max_attach",
+                                    SESSION_DEFAULT_MAX_ATTACH);
+    if (!session_manager_set_max_attach(g_session_mgr, max_attach)) {
+        log_warn("Using default max_attach=%d", SESSION_DEFAULT_MAX_ATTACH);
+        max_attach = SESSION_DEFAULT_MAX_ATTACH;
+    }
+    log_info("Session manager initialized (max_sessions=%d, max_attach=%d)",
+             max_sessions, max_attach);
     
     // Initialize REST API and start HTTP server (if enabled)
     if (http_enabled && g_http_server) {

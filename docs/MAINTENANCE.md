@@ -125,6 +125,7 @@ api_keys = key1,key2,key3          # Comma-separated API keys
 
 [sessions]
 max_sessions = 50
+max_attach = 16
 default_shell = /bin/bash
 ```
 
@@ -173,6 +174,7 @@ files and `/api/health` are always unauthenticated.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `max_sessions` | `50` | Maximum concurrent sessions |
+| `max_attach` | `16` | Terminals that can attach to one session at once (1-256); read at startup |
 | `default_shell` | `/bin/sh` | Shell used when a request omits `command` |
 
 **Note**: Scrollback size, terminal size, and timeouts are per-session request

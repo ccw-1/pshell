@@ -61,8 +61,11 @@ struct session {
     size_t raw_read_pos;
     size_t raw_available;
     
-    /* Interactive attached clients (see session_attach_client) */
-    session_attach_t attach[SESSION_MAX_ATTACH];
+    /* Interactive attached clients (see session_attach_client). Allocated
+     * once when the slot is first used and kept for the daemon's lifetime:
+     * the multiplexer holds pointers into it past a deferred removal. */
+    session_attach_t *attach;
+    int max_attach;
 
     /* Expect buffer (active only during expect operations) */
     char *expect_buffer;
@@ -104,6 +107,7 @@ struct session {
 struct session_manager {
     session_t sessions[MAX_SESSIONS];
     int max_sessions;
+    int max_attach;         /* Attached terminals allowed per session */
     int session_count;
     io_multiplexer_t *mux;  /* I/O multiplexer for monitoring PTY FDs */
     pthread_mutex_t lock;   /* Protects session list mutations and lookups */
@@ -127,6 +131,7 @@ session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mu
     }
     
     mgr->max_sessions = max_sessions;
+    mgr->max_attach = SESSION_DEFAULT_MAX_ATTACH;
     mgr->session_count = 0;
     mgr->mux = mux;
     pthread_mutex_init(&mgr->lock, NULL);
@@ -140,6 +145,17 @@ session_manager_t* session_manager_create(int max_sessions, io_multiplexer_t *mu
     
     log_info("Created session manager (max_sessions=%d)", max_sessions);
     return mgr;
+}
+
+bool session_manager_set_max_attach(session_manager_t *mgr, int max_attach) {
+    if (!mgr || max_attach < 1 || max_attach > SESSION_MAX_ATTACH_LIMIT) {
+        log_error("Invalid max_attach: %d (1-%d)", max_attach, SESSION_MAX_ATTACH_LIMIT);
+        return false;
+    }
+    pthread_mutex_lock(&mgr->lock);
+    mgr->max_attach = max_attach;
+    pthread_mutex_unlock(&mgr->lock);
+    return true;
 }
 
 /* Free a session's heap/file/PTY resources (but NOT the per-slot mutex and
@@ -249,6 +265,7 @@ void session_manager_destroy(session_manager_t *mgr) {
 
     /* Destroy mutexes only after all sessions are quiesced */
     for (int i = 0; i < MAX_SESSIONS; i++) {
+        free(mgr->sessions[i].attach);
         pthread_mutex_destroy(&mgr->sessions[i].expect_lock);
     }
     pthread_mutex_destroy(&mgr->lock);
@@ -580,7 +597,7 @@ static void session_attach_close(session_attach_t *att) {
 
 static void session_attach_close_all(session_t *session) {
     if (!session) return;
-    for (int i = 0; i < SESSION_MAX_ATTACH; i++) {
+    for (int i = 0; session->attach && i < session->max_attach; i++) {
         session_attach_close(&session->attach[i]);
     }
 }
@@ -603,7 +620,7 @@ static bool session_attach_write(int fd, const char *data, size_t len) {
 }
 
 static void session_attach_broadcast(session_t *session, const char *data, size_t len) {
-    for (int i = 0; i < SESSION_MAX_ATTACH; i++) {
+    for (int i = 0; session->attach && i < session->max_attach; i++) {
         session_attach_t *att = &session->attach[i];
         if (!att->used) continue;
         if (!session_attach_write(att->fd, data, len)) {
@@ -645,7 +662,7 @@ bool session_attach_client(session_t *session, int fd) {
     if (session->state == SESSION_STATE_DEAD) return false;
     
     session_attach_t *att = NULL;
-    for (int i = 0; i < SESSION_MAX_ATTACH; i++) {
+    for (int i = 0; session->attach && i < session->max_attach; i++) {
         if (!session->attach[i].used) {
             att = &session->attach[i];
             break;
@@ -743,6 +760,16 @@ const char* session_manager_create_session_as_user(session_manager_t *mgr,
     if (!session) {
         log_error("No free session slots");
         return NULL;
+    }
+    
+    /* Attach table: allocated on first use of the slot, then kept */
+    if (!session->attach) {
+        session->attach = calloc((size_t)mgr->max_attach, sizeof(session_attach_t));
+        if (!session->attach) {
+            log_error("Failed to allocate attach table");
+            return NULL;
+        }
+        session->max_attach = mgr->max_attach;
     }
     
     /* Generate session ID */

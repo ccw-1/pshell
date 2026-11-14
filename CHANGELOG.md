@@ -11,7 +11,8 @@ The current version is defined in [VERSION](VERSION) and `include/pshell/version
 
 ### Added
 
-- `pshellctl attach <session-id>`: interactive terminal on a session over the Unix socket (no HTTP). The `attach_session` socket method replies normally, then the connection becomes a raw byte stream owned by the session (client input to the PTY, PTY output to up to 4 attached clients, screen redraw on attach). The session is resized to the attaching terminal (also on SIGWINCH); `Ctrl-]` detaches. Test: `tests/integration/test_attach.py`.
+- `[sessions] max_attach` setting (default 16, range 1-256, read at startup): maximum terminals attached to one session. Replaces the fixed limit of 4; the per-session attach table is now heap-allocated.
+- `pshellctl attach <session-id>`: interactive terminal on a session over the Unix socket (no HTTP). The `attach_session` socket method replies normally, then the connection becomes a raw byte stream owned by the session (client input to the PTY, PTY output to up to `[sessions] max_attach` (default 16) attached clients, screen redraw on attach). The session is resized to the attaching terminal (also on SIGWINCH); `Ctrl-]` detaches. Test: `tests/integration/test_attach.py`.
 
 ### Changed
 

@@ -171,7 +171,7 @@
   - Impact: Medium
 
 - [ ] **`pshellctl attach` limitations**
-  - Output is dropped for a terminal that cannot keep up; max 4 terminals per session
+  - Output is dropped for a terminal that cannot keep up; limit is `[sessions] max_attach` (default 16)
   - The initial redraw is plain text (no colours/attributes)
   - Solution: replay recent raw output or render cell attributes on attach
 

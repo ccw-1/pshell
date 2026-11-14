@@ -118,7 +118,7 @@ pshellctl scrollback <session-id> --start 0 --count 50
 pshellctl expect <session-id> "password:" 5000
 
 # Open an interactive terminal on the session (Unix socket, no HTTP).
-# Ctrl-] detaches; the session keeps running. Up to 4 terminals per session.
+# Ctrl-] detaches; the session keeps running. Up to `[sessions] max_attach` (default 16) terminals per session.
 pshellctl attach <session-id>
 
 # View the current screen (non-interactive snapshot)
@@ -391,6 +391,7 @@ api_keys = key1,key2   # comma-separated list of valid API keys
 
 [sessions]
 max_sessions = 50
+max_attach = 16
 default_shell = /bin/bash
 ```
 

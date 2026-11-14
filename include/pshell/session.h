@@ -321,8 +321,17 @@ ssize_t session_read_expect_output(session_t *session, char *buffer, size_t size
 
 void session_clear_raw_buffer(session_t *session);
 
-/* Maximum number of interactive terminals attached to one session */
-#define SESSION_MAX_ATTACH 4
+/* Interactive terminals attachable to one session: default and upper bound
+ * (the daemon's select()-based multiplexer tops out near 1024 descriptors) */
+#define SESSION_DEFAULT_MAX_ATTACH 16
+#define SESSION_MAX_ATTACH_LIMIT 256
+
+/**
+ * Set how many terminals may attach to each session. Call once at startup,
+ * before sessions are created; sessions created earlier keep their limit.
+ * @return false if max_attach is outside 1..SESSION_MAX_ATTACH_LIMIT
+ */
+bool session_manager_set_max_attach(session_manager_t *mgr, int max_attach);
 
 /**
  * Attach an interactive client to a session. On success the session owns

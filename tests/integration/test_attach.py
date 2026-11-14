@@ -104,6 +104,7 @@ enabled = false
 
 [sessions]
 max_sessions = 10
+max_attach = 2
 """)
     daemon = subprocess.Popen([PSHELL, "-f", "-c", conf],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -161,8 +162,21 @@ max_sessions = 10
         b.send("echo TWO$((2*3))X\n")
         check("first terminal sees output", b.read_until("TWO6X"), b.buf.decode(errors="replace"))
         check("second terminal sees output", c.read_until("TWO6X"), c.buf.decode(errors="replace"))
+
+        # max_attach = 2: a third terminal is refused, the others keep working
+        d = Attach(sock, sid)
+        rc = d.wait()
+        check("third terminal refused at max_attach=2", rc != 0, "%s %r" % (rc, d.buf))
+        b.send("echo STILL$((4+4))OK\n")
+        check("existing terminals unaffected", b.read_until("STILL8OK"), b.buf.decode(errors="replace"))
         c.send("\x1d")
         c.wait()
+        e = Attach(sock, sid)
+        time.sleep(0.5)
+        e.send("echo FREED$((5+5))X\n")
+        check("slot reusable after detach", e.read_until("FREED10X"), e.buf.decode(errors="replace"))
+        e.send("\x1d")
+        e.wait()
 
         # shell exits -> attached terminal is told the session ended
         b.send("exit\n")
