@@ -26,7 +26,7 @@ The current version is defined in [VERSION](VERSION) and `include/pshell/version
 
 ### Documentation
 
-- `docs/MCP_SERVER.md`, `docs/ESCAPE_SEQUENCES.md`: driving full-screen (TUI) applications. Send text and `\r` as separate `pshell_send` calls, otherwise the TUI treats the burst as a paste.
+- `docs/MCP_SERVER.md`, `docs/ESCAPE_SEQUENCES.md`: driving full-screen (TUI) applications. Send text and `\r` as separate `pshell_send` calls, otherwise the TUI treats the burst as a paste. Bob Shell slash commands need a trailing space (`/status `) so the autocomplete menu does not swallow the Enter.
 - `docs/MAINTENANCE.md`: `pshellctl attach`. `TODO.md`: attach limitations.
 
 ## [1.2.0] - 2026-10-14

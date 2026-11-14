@@ -70,8 +70,10 @@ Applications with their own line editor or input widget (Bob Shell, editors, cur
 
 Send them as **two separate calls**:
 
-1. `pshell_send` with the text (no newline), e.g. `/status`
+1. `pshell_send` with the text (no newline), e.g. `/status ` (note the trailing space, see below)
 2. `pshell_send` with `text: "\r"` and `process_escapes: true`
+
+Slash commands in Bob Shell open an autocomplete menu while you type. Enter then accepts the highlighted suggestion instead of running the command, so the first Enter can appear to do nothing. A trailing space after the command (`/status `) dismisses the menu and the Enter runs it.
 
 Other tips:
 
