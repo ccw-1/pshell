@@ -505,14 +505,14 @@ static void handle_get_screen(socket_connection_t *conn, json_value_t *params, s
         return;
     }
     
-    /* Get screen: the text is UTF-8, up to UTF8_MAX_BYTES per cell plus a
-     * newline per row */
+    /* Get screen: UTF-8 text, sized from the screen (combining marks make
+     * cells longer than UTF8_MAX_BYTES) */
     session_info_t info;
     if (!session_get_info(session, &info) || info.rows <= 0 || info.cols <= 0) {
         send_error(conn, "Session not available");
         return;
     }
-    size_t screen_cap = (size_t)info.rows * ((size_t)info.cols * UTF8_MAX_BYTES + 1) + 1;
+    size_t screen_cap = session_get_screen_text_size(session) + 256;
     char *screen = malloc(screen_cap);
     /* JSON escaping at most doubles a byte (\n, \", \\) */
     size_t result_cap = screen_cap * 2 + 128;

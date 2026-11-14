@@ -802,14 +802,14 @@ static void handle_get_screen(http_request_t *req, http_response_t *resp, void *
         return;
     }
     
-    /* Get screen text (UTF-8: up to 4 bytes per cell plus a newline per row) */
+    /* Get screen text (UTF-8, sized from the screen: combining marks make cells longer) */
     session_info_t info;
     if (!session_get_info(session, &info) || info.rows <= 0 || info.cols <= 0) {
         free(session_id);
         http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Session not available");
         return;
     }
-    size_t text_cap = (size_t)info.rows * ((size_t)info.cols * 4 + 1) + 1;
+    size_t text_cap = session_get_screen_text_size(session) + 256;
     size_t escaped_cap = text_cap * 2 + 16;
     size_t response_cap = escaped_cap + 128;
     char *screen_text = malloc(text_cap);

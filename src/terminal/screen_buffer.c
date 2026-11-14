@@ -92,6 +92,7 @@ screen_buffer_t *screen_buffer_create(int rows, int cols, int scrollback_lines) 
     screen->rows = rows;
     screen->cols = cols;
     screen->scrollback_size = scrollback_lines;
+    screen->last_row = -1;
     
     /* Allocate screen cells */
     screen->cells = calloc(rows * cols, sizeof(char_cell_t));
@@ -140,6 +141,7 @@ void screen_buffer_destroy(screen_buffer_t *screen) {
     free(screen->cells);
     free(screen->scrollback);
     free(screen->tab_stops);
+    free(screen->clusters);
     free(screen);
 }
 
@@ -235,6 +237,7 @@ int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
     screen->scrollback_pos = new_sb_pos;
     screen->rows = rows;
     screen->cols = cols;
+    screen->last_row = -1;
     
     /* Adjust cursor */
     clamp_cursor(screen);
@@ -253,6 +256,7 @@ void screen_buffer_clear(screen_buffer_t *screen) {
         clear_cell(&screen->cells[i]);
     }
     
+    screen->last_row = -1;
     screen->cursor.row = 0;
     screen->cursor.col = 0;
     screen->cursor.visible = true;
@@ -269,12 +273,112 @@ static void wrap_to_next_line(screen_buffer_t *screen) {
     if (screen->cursor.row > screen->scroll_bottom) {
         screen_buffer_scroll_up(screen, 1);
         screen->cursor.row = screen->scroll_bottom;
+        /* The content moved up one row */
+        if (screen->last_row > 0) screen->last_row--; else screen->last_row = -1;
     }
+}
+
+/* ---- Combining marks and joined sequences ---- */
+
+/* Code points that belong to the character before them instead of taking a
+ * cell: combining marks and other zero-width characters (not controls), and
+ * emoji skin tone modifiers. */
+static bool is_attaching(uint32_t cp) {
+    if (cp >= 0x1F3FB && cp <= 0x1F3FF) return true;
+    return cp >= 0xA0 && utf8_cp_width(cp) == 0;
+}
+
+/* Return the pool index of the sequence, adding it if new; -1 if the pool is full */
+static int intern_cluster(screen_buffer_t *screen, const uint32_t *cps, int count) {
+    for (int i = 0; i < screen->cluster_count; i++) {
+        const cluster_t *cl = &screen->clusters[i];
+        if (cl->count == count && memcmp(cl->cps, cps, (size_t)count * sizeof(uint32_t)) == 0) {
+            return i;
+        }
+    }
+    if (screen->cluster_count >= CLUSTER_POOL_MAX) return -1;
+    if (screen->cluster_count == screen->cluster_cap) {
+        int cap = screen->cluster_cap ? screen->cluster_cap * 2 : 64;
+        cluster_t *p = realloc(screen->clusters, (size_t)cap * sizeof(cluster_t));
+        if (!p) return -1;
+        screen->clusters = p;
+        screen->cluster_cap = cap;
+    }
+    cluster_t *cl = &screen->clusters[screen->cluster_count];
+    memset(cl, 0, sizeof(*cl));
+    memcpy(cl->cps, cps, (size_t)count * sizeof(uint32_t));
+    cl->count = (uint8_t)count;
+    return screen->cluster_count++;
+}
+
+int screen_buffer_cell_codepoints(const screen_buffer_t *screen, const char_cell_t *cell,
+                                  uint32_t *out) {
+    if (cell->ch == CELL_CONTINUATION) return 0;
+    if (cell->ch & CELL_CLUSTER_FLAG) {
+        uint32_t idx = cell->ch & ~CELL_CLUSTER_FLAG;
+        if ((int)idx < screen->cluster_count) {
+            const cluster_t *cl = &screen->clusters[idx];
+            memcpy(out, cl->cps, cl->count * sizeof(uint32_t));
+            return cl->count;
+        }
+        out[0] = UTF8_REPLACEMENT;
+        return 1;
+    }
+    out[0] = cell->ch;
+    return 1;
+}
+
+/* The cell of the last printed character, if the cursor is still right
+ * behind it (nothing has moved the cursor or changed the screen since) */
+static char_cell_t *attach_target(screen_buffer_t *screen) {
+    if (screen->last_row < 0) return NULL;
+    int after = screen->last_col + screen->last_width;
+    bool behind;
+    if (after < screen->cols) {
+        behind = screen->cursor.row == screen->last_row && screen->cursor.col == after;
+    } else if (screen->auto_wrap) {
+        behind = screen->cursor.row == screen->last_row + 1 && screen->cursor.col == 0;
+    } else {
+        behind = screen->cursor.row == screen->last_row &&
+                 screen->cursor.col == screen->cols - 1;
+    }
+    if (!behind) return NULL;
+    char_cell_t *cell = get_cell(screen, screen->last_row, screen->last_col);
+    if (!cell || cell->ch == CELL_CONTINUATION) return NULL;
+    return cell;
+}
+
+/* Append cp to the cell's cluster. Silently drops it if the cluster is full. */
+static void cluster_append(screen_buffer_t *screen, char_cell_t *cell, uint32_t cp) {
+    uint32_t cps[CLUSTER_MAX_CPS];
+    int n = screen_buffer_cell_codepoints(screen, cell, cps);
+    if (n <= 0 || n >= CLUSTER_MAX_CPS) return;
+    cps[n++] = cp;
+    int idx = intern_cluster(screen, cps, n);
+    if (idx >= 0) cell->ch = CELL_CLUSTER_FLAG | (uint32_t)idx;
 }
 
 void screen_buffer_put_codepoint(screen_buffer_t *screen, uint32_t cp) {
     int width = utf8_cp_width(cp);
-    if (width == 0) return;     /* combining / zero-width: nothing to draw */
+    if (is_attaching(cp)) {
+        char_cell_t *target = attach_target(screen);
+        if (target) cluster_append(screen, target, cp);
+        return;                 /* combining / zero-width: no cell of its own */
+    }
+    if (width == 0) return;     /* control character */
+    
+    /* After a zero width joiner the next character joins the previous one */
+    {
+        char_cell_t *target = attach_target(screen);
+        if (target) {
+            uint32_t cps[CLUSTER_MAX_CPS];
+            int n = screen_buffer_cell_codepoints(screen, target, cps);
+            if (n > 0 && cps[n - 1] == 0x200D) {
+                cluster_append(screen, target, cp);
+                return;
+            }
+        }
+    }
     if (width == 2 && screen->cols < 2) {
         cp = '?';
         width = 1;
@@ -304,6 +408,9 @@ void screen_buffer_put_codepoint(screen_buffer_t *screen, uint32_t cp) {
     /* Write character */
     cell->ch = cp;
     cell->attr = screen->cursor.attr;
+    screen->last_row = screen->cursor.row;
+    screen->last_col = screen->cursor.col;
+    screen->last_width = width;
     if (width == 2) {
         char_cell_t *right = get_cell(screen, screen->cursor.row, screen->cursor.col + 1);
         right->ch = CELL_CONTINUATION;
@@ -707,9 +814,11 @@ void screen_buffer_clear_tab(screen_buffer_t *screen) {
 }
 
 void screen_buffer_process_sequence(screen_buffer_t *screen, const vt100_sequence_t *seq) {
-    /* Anything but more text interrupts a partial UTF-8 character */
+    /* Anything but more text interrupts a partial UTF-8 character and ends
+     * the run of characters a combining mark could attach to */
     if (seq->type != VT100_SEQ_PRINT) {
         utf8_flush(screen);
+        screen->last_row = -1;
     }
     
     switch (seq->type) {
@@ -802,14 +911,18 @@ const char_cell_t *screen_buffer_get_cell(const screen_buffer_t *screen, int row
     return &screen->cells[row * screen->cols + col];
 }
 
-size_t screen_buffer_cells_to_utf8(const char_cell_t *cells, int count, char *buffer, size_t size) {
+size_t screen_buffer_cells_to_utf8(const screen_buffer_t *screen, const char_cell_t *cells,
+                                   int count, char *buffer, size_t size) {
     if (!buffer || size == 0) return 0;
     
     size_t pos = 0;
     for (int c = 0; c < count; c++) {
-        if (cells[c].ch == CELL_CONTINUATION) continue;
-        char enc[UTF8_MAX_BYTES];
-        size_t len = utf8_encode(cells[c].ch, enc);
+        uint32_t cps[CLUSTER_MAX_CPS];
+        int n = screen_buffer_cell_codepoints(screen, &cells[c], cps);
+        if (n == 0) continue;
+        char enc[CLUSTER_MAX_CPS * UTF8_MAX_BYTES];
+        size_t len = 0;
+        for (int i = 0; i < n; i++) len += utf8_encode(cps[i], enc + len);
         if (pos + len >= size) break;   /* keep room for the NUL */
         memcpy(buffer + pos, enc, len);
         pos += len;
@@ -823,7 +936,7 @@ size_t screen_buffer_get_line(const screen_buffer_t *screen, int row, char *buff
         return 0;
     }
     
-    return screen_buffer_cells_to_utf8(&screen->cells[(size_t)row * screen->cols],
+    return screen_buffer_cells_to_utf8(screen, &screen->cells[(size_t)row * screen->cols],
                                        screen->cols, buffer, size);
 }
 
@@ -841,7 +954,7 @@ size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_
         }
         
         /* Copy characters up to last non-space (or empty line) */
-        pos += screen_buffer_cells_to_utf8(row_cells, last_col + 1,
+        pos += screen_buffer_cells_to_utf8(screen, row_cells, last_col + 1,
                                            buffer + pos, size - pos);
         
         /* Add newline after each row */
@@ -901,8 +1014,12 @@ char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len) 
                 ansi_put(&o, sgr, n);
                 cur = cell->attr;
             }
-            char enc[UTF8_MAX_BYTES];
-            ansi_put(&o, enc, utf8_encode(cell->ch, enc));
+            uint32_t cps[CLUSTER_MAX_CPS];
+            int n = screen_buffer_cell_codepoints(screen, cell, cps);
+            for (int i = 0; i < n; i++) {
+                char enc[UTF8_MAX_BYTES];
+                ansi_put(&o, enc, utf8_encode(cps[i], enc));
+            }
         }
         
         /* Do not let a row's attributes run into the line break */
@@ -925,6 +1042,25 @@ char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len) 
     }
     if (out_len) *out_len = o.len;
     return o.data;
+}
+
+size_t screen_buffer_text_size(const screen_buffer_t *screen) {
+    size_t total = 1;   /* NUL */
+    for (int r = 0; r < screen->rows; r++) {
+        const char_cell_t *row_cells = &screen->cells[(size_t)r * screen->cols];
+        int last_col = screen->cols - 1;
+        while (last_col >= 0 && row_cells[last_col].ch == ' ') last_col--;
+        for (int c = 0; c <= last_col; c++) {
+            uint32_t cps[CLUSTER_MAX_CPS];
+            int n = screen_buffer_cell_codepoints(screen, &row_cells[c], cps);
+            for (int i = 0; i < n; i++) {
+                char enc[UTF8_MAX_BYTES];
+                total += utf8_encode(cps[i], enc);
+            }
+        }
+        total++;   /* newline */
+    }
+    return total;
 }
 
 const char_cell_t *screen_buffer_get_scrollback_line(const screen_buffer_t *screen, int line_index) {

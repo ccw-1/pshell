@@ -1263,6 +1263,11 @@ void session_update_activity(session_t *session) {
 
 
 
+size_t session_get_screen_text_size(const session_t *session) {
+    if (!session || !session->screen) return 1;
+    return screen_buffer_text_size(session->screen);
+}
+
 size_t session_get_screen_text(const session_t *session, char *buffer, size_t size) {
     if (!session || !buffer || size == 0) return 0;
     
@@ -1772,5 +1777,5 @@ ssize_t session_get_scrollback_line(const session_t *session, int line_index, ch
     if (!line) return -1;
     
     /* Convert cells to UTF-8 text */
-    return (ssize_t)screen_buffer_cells_to_utf8(line, session->screen->cols, buffer, size);
+    return (ssize_t)screen_buffer_cells_to_utf8(session->screen, line, session->screen->cols, buffer, size);
 }

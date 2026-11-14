@@ -44,9 +44,22 @@ typedef struct {
 /* Cell value of the right half of a double-width character */
 #define CELL_CONTINUATION 0
 
+/* A cell that carries combining marks / a joined sequence stores
+ * CELL_CLUSTER_FLAG | index instead of a code point; the index selects an
+ * entry of the screen's cluster pool (see screen_buffer_cell_codepoints). */
+#define CELL_CLUSTER_FLAG 0x80000000u
+#define CLUSTER_MAX_CPS   8      /* code points per cluster (base + marks) */
+#define CLUSTER_POOL_MAX  4096   /* distinct clusters per screen */
+
+typedef struct {
+    uint32_t cps[CLUSTER_MAX_CPS];
+    uint8_t count;
+} cluster_t;
+
 /* Character cell */
 typedef struct {
-    uint32_t ch;          /* Unicode code point (CELL_CONTINUATION = 2nd column of a wide char) */
+    uint32_t ch;          /* Unicode code point, CELL_CONTINUATION (2nd column of a wide char)
+                           * or CELL_CLUSTER_FLAG | pool index */
     char_attr_t attr;     /* Character attributes */
 } char_cell_t;
 
@@ -91,6 +104,19 @@ typedef struct {
     bool origin_mode;     /* Origin mode (cursor addressing) */
     bool insert_mode;     /* Insert mode */
     
+    /* Pool of code point sequences for cells with combining marks. Entries are
+     * de-duplicated and never freed, so cell indexes stay valid while cells are
+     * copied between screen and scrollback. */
+    cluster_t *clusters;
+    int cluster_count;
+    int cluster_cap;
+    
+    /* Where the last printable character went (lead cell), so a following
+     * combining mark can be attached to it. last_row = -1: nothing to attach to. */
+    int last_row;
+    int last_col;
+    int last_width;
+    
     /* UTF-8 decoder state (bytes arrive one at a time) */
     uint32_t utf8_cp;     /* Code point being assembled */
     uint32_t utf8_min;    /* Smallest valid value (rejects overlong forms) */
@@ -130,16 +156,31 @@ void screen_buffer_process_sequence(screen_buffer_t *screen, const vt100_sequenc
 const char_cell_t *screen_buffer_get_cell(const screen_buffer_t *screen, int row, int col);
 
 /**
+ * Get the code points shown in a cell: the base character followed by any
+ * combining marks. out must hold CLUSTER_MAX_CPS entries. Returns the count
+ * (1 for a plain cell; 0 for the right half of a wide character).
+ */
+int screen_buffer_cell_codepoints(const screen_buffer_t *screen, const char_cell_t *cell,
+                                  uint32_t *out);
+
+/**
+ * Exact number of bytes screen_buffer_get_text() needs for the screen
+ * (including the terminating NUL).
+ */
+size_t screen_buffer_text_size(const screen_buffer_t *screen);
+
+/**
  * Get a line of text (for rendering or output) as UTF-8.
  * Returns number of bytes written to buffer (NUL terminated).
- * A line needs up to cols * UTF8_MAX_BYTES + 1 bytes.
+ * A line needs up to cols * CLUSTER_MAX_CPS * UTF8_MAX_BYTES + 1 bytes in
+ * the worst case; plain text needs cols * UTF8_MAX_BYTES + 1.
  */
 size_t screen_buffer_get_line(const screen_buffer_t *screen, int row, char *buffer, size_t size);
 
 /**
  * Get entire screen as UTF-8 text (for debugging or snapshots)
- * Returns number of bytes written. The text needs up to
- * rows * (cols * UTF8_MAX_BYTES + 1) + 1 bytes.
+ * Returns number of bytes written. Size the buffer with
+ * screen_buffer_text_size().
  */
 size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_t size);
 
@@ -158,7 +199,8 @@ char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len);
  * Continuation cells (right half of a wide character) are skipped. Stops
  * before overflowing size. Returns the bytes written (NUL terminated).
  */
-size_t screen_buffer_cells_to_utf8(const char_cell_t *cells, int count, char *buffer, size_t size);
+size_t screen_buffer_cells_to_utf8(const screen_buffer_t *screen, const char_cell_t *cells,
+                                   int count, char *buffer, size_t size);
 
 /**
  * Get scrollback line
@@ -190,7 +232,9 @@ void screen_buffer_put_char(screen_buffer_t *screen, char ch);
 
 /**
  * Print a Unicode code point at the cursor position and advance the cursor
- * (two columns for wide characters, none for combining characters)
+ * (two columns for wide characters). Combining marks, joiners and emoji
+ * modifiers are attached to the character printed before them and do not
+ * advance the cursor.
  */
 void screen_buffer_put_codepoint(screen_buffer_t *screen, uint32_t cp);
 

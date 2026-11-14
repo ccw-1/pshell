@@ -223,6 +223,12 @@ void session_update_activity(session_t *session);
 size_t session_get_screen_text(const session_t *session, char *buffer, size_t size);
 
 /**
+ * Bytes session_get_screen_text() needs for the current screen, including
+ * the NUL (the screen can change meanwhile; add some slack)
+ */
+size_t session_get_screen_text_size(const session_t *session);
+
+/**
  * Get screen line
  * @param session Session
  * @param row Row number (0-based)

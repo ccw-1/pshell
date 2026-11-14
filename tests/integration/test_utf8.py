@@ -80,6 +80,7 @@ max_sessions = 10
         f.write("╭──╮\r\n│é│\r\n日本語 ✓ 😀|\r\n".encode())
         f.write(b"bad:\xff\xe2\x94 end\r\n")                 # invalid UTF-8
         f.write("abc\x1b[3D\x1b[2Cxyz\r\n".encode())          # cursor moves
+        f.write("dec: e\u0301 a\u0308\u0323 \U0001F44D\U0001F3FD |\r\n".encode())   # combining marks
     daemon = subprocess.Popen([PSHELL, "-f", "-c", conf],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -110,6 +111,8 @@ max_sessions = 10
         check("CJK, check mark and emoji intact", "日本語 ✓ 😀|" in out, out)
         check("invalid bytes become U+FFFD", "bad:\ufffd\ufffd end" in out, out)
         check("cursor movement by columns, not bytes", "abxyz" in out, out)
+        check("combining marks and modifiers kept",
+              "dec: e\u0301 a\u0308\u0323 \U0001F44D\U0001F3FD |" in out, out)
 
         # Push the art into the scrollback: 10 rows, print 30 numbered lines
         ctl(sock, "send", sid, "for i in $(seq 1 30); do echo ─$i─; done\\n")

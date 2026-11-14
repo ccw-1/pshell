@@ -468,9 +468,9 @@ void test_utf8_cursor_and_width(void) {
     }
     screen_buffer_destroy(screen);
     
-    /* Combining mark has no width and is not stored: "e" + U+0301 */
-    if (!utf8_row_is(10, "e\xcc\x81x", 0, "ex")) {
-        FAIL("combining character should be dropped");
+    /* Combining mark has no width and stays with its base: "e" + U+0301 */
+    if (!utf8_row_is(10, "e\xcc\x81x", 0, "e\xcc\x81x")) {
+        FAIL("combining character should be kept on its base");
     }
     
     /* Wide character that does not fit in the last column wraps */
@@ -566,7 +566,7 @@ void test_utf8_scrollback(void) {
         FAIL("no scrollback line");
     }
     char line[64];
-    screen_buffer_cells_to_utf8(cells, screen->cols, line, sizeof(line));
+    screen_buffer_cells_to_utf8(screen, cells, screen->cols, line, sizeof(line));
     size_t len = strlen(line);
     while (len > 0 && line[len - 1] == ' ') line[--len] = '\0';
     if (strcmp(line, "\xe2\x94\x82hi\xe6\x97\xa5") != 0) {
@@ -674,6 +674,130 @@ void test_render_ansi(void) {
 }
 
 
+/* ---- Combining characters ---- */
+
+void test_combining_marks(void) {
+    TEST("combining_marks");
+    
+    /* Decomposed accent, two marks on one base, cursor does not move for marks */
+    screen_buffer_t *screen = screen_buffer_create(2, 20, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "e\xcc\x81" "a\xcc\x88\xcc\xa3" "z");
+    int row, col;
+    screen_buffer_get_cursor(screen, &row, &col);
+    if (col != 3) { screen_buffer_destroy(screen); FAIL("marks must not advance the cursor"); }
+    
+    char line[64];
+    screen_buffer_get_line(screen, 0, line, sizeof(line));
+    line[strcspn(line, " ")] = '\0';
+    if (strcmp(line, "e\xcc\x81" "a\xcc\x88\xcc\xa3" "z") != 0) {
+        screen_buffer_destroy(screen);
+        FAIL("marks lost in line text");
+    }
+    
+    /* A mark after the cursor moved is not attached to the old character */
+    screen_buffer_destroy(screen);
+    if (!utf8_row_is(10, "ab\x1b[3G\xcc\x81x", 0, "abx")) {
+        FAIL("mark after cursor movement must be dropped");
+    }
+    
+    /* Overwriting a character with marks replaces it completely */
+    if (!utf8_row_is(10, "e\xcc\x81\rX", 0, "X")) {
+        FAIL("overwrite should drop the marks");
+    }
+    PASS();
+}
+
+void test_combining_sequences(void) {
+    TEST("combining_sequences");
+    
+    /* Skin tone modifier stays with the emoji: thumbs up + U+1F3FD */
+    if (!utf8_row_is(10, "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbdx", 0,
+                     "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbdx")) {
+        FAIL("skin tone modifier should attach to the emoji");
+    }
+    
+    /* ZWJ sequence: man ZWJ woman is one character, 2 columns */
+    screen_buffer_t *screen = screen_buffer_create(2, 20, 0);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9y");
+    int row, col;
+    screen_buffer_get_cursor(screen, &row, &col);
+    char line[64];
+    screen_buffer_get_line(screen, 0, line, sizeof(line));
+    line[strcspn(line, " ")] = '\0';
+    int ok = col == 3 && strcmp(line, "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9y") == 0;
+    screen_buffer_destroy(screen);
+    if (!ok) { FAIL("ZWJ sequence should be a single 2-column cell"); }
+    PASS();
+}
+
+void test_combining_wrap_and_copy(void) {
+    TEST("combining_wrap_and_copy");
+    
+    /* Mark after a character in the last column (the cursor already wrapped) */
+    screen_buffer_t *screen = screen_buffer_create(3, 4, 5);
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "abce\xcc\x81" "x");
+    char line[64];
+    screen_buffer_get_line(screen, 0, line, sizeof(line));
+    if (strcmp(line, "abce\xcc\x81") != 0) { screen_buffer_destroy(screen); FAIL("mark at last column"); }
+    
+    /* Marks survive scrolling into the scrollback and a resize */
+    feed_text(screen, &parser, "\r\n\r\n\r\n");
+    const char_cell_t *cells = screen_buffer_get_scrollback_line(screen, 0);
+    if (!cells) { screen_buffer_destroy(screen); FAIL("no scrollback"); }
+    screen_buffer_cells_to_utf8(screen, cells, screen->cols, line, sizeof(line));
+    if (strcmp(line, "abce\xcc\x81") != 0) { screen_buffer_destroy(screen); FAIL("marks lost in scrollback"); }
+    screen_buffer_resize(screen, 3, 8);
+    cells = screen_buffer_get_scrollback_line(screen, 0);
+    screen_buffer_cells_to_utf8(screen, cells, 4, line, sizeof(line));
+    if (strcmp(line, "abce\xcc\x81") != 0) { screen_buffer_destroy(screen); FAIL("marks lost after resize"); }
+    
+    /* The text size matches what get_text writes */
+    char *text = malloc(screen_buffer_text_size(screen));
+    size_t n = screen_buffer_get_text(screen, text, screen_buffer_text_size(screen));
+    int sized = n + 1 <= screen_buffer_text_size(screen);
+    free(text);
+    screen_buffer_destroy(screen);
+    if (!sized) { FAIL("text size too small"); }
+    PASS();
+}
+
+void test_cluster_pool_limits(void) {
+    TEST("cluster_pool_limits");
+    
+    /* More distinct clusters than the pool holds: the base characters stay, extra marks are dropped */
+    screen_buffer_t *screen = screen_buffer_create(1, 200, 0);
+    for (uint32_t i = 0; i < CLUSTER_POOL_MAX + 50; i++) {
+        screen_buffer_set_cursor(screen, 0, 0);
+        screen->last_row = -1;
+        screen_buffer_put_codepoint(screen, 'a' + (i % 20));
+        screen_buffer_put_codepoint(screen, 0x0300 + (i % 100));
+        screen_buffer_put_codepoint(screen, 0x0300 + ((i / 100) % 100));
+        screen_buffer_put_codepoint(screen, 0x0300 + ((i / 10000) % 100) + 1);
+    }
+    if (screen->cluster_count > CLUSTER_POOL_MAX) { screen_buffer_destroy(screen); FAIL("pool grew beyond the limit"); }
+    
+    screen_buffer_destroy(screen);
+    
+    /* A long run of marks is cut at CLUSTER_MAX_CPS code points */
+    screen = screen_buffer_create(1, 200, 0);
+    screen_buffer_set_cursor(screen, 0, 10);
+    screen->last_row = -1;
+    screen_buffer_put_codepoint(screen, 'q');
+    for (int i = 0; i < 20; i++) screen_buffer_put_codepoint(screen, 0x0300 + i);
+    uint32_t cps[CLUSTER_MAX_CPS];
+    int n = screen_buffer_cell_codepoints(screen, screen_buffer_get_cell(screen, 0, 10), cps);
+    screen_buffer_destroy(screen);
+    if (n != CLUSTER_MAX_CPS) { FAIL("cluster not capped"); }
+    PASS();
+}
+
+
 int main(void) {
     printf("=== Terminal Emulation Tests ===\n\n");
     
@@ -702,6 +826,11 @@ int main(void) {
     test_sgr_truecolor_does_not_leak_params();
     test_attr_to_sgr();
     test_render_ansi();
+    /* Combining characters */
+    test_combining_marks();
+    test_combining_sequences();
+    test_combining_wrap_and_copy();
+    test_cluster_pool_limits();
     
 
     

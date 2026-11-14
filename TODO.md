@@ -158,10 +158,10 @@
   - Solution: Per-context buffers or operation queuing
   - Impact: Medium - limits automation scenarios
 
-- [ ] **Screen buffer: combining characters and grapheme clusters**
-  - Current: UTF-8 is decoded (code point per cell, double-width = 2 cells), but zero-width code points (combining marks, ZWJ, variation selectors) are dropped
-  - Issue: emoji sequences / decomposed accents lose their modifiers
-  - Solution: attach combining code points to the previous cell
+- [ ] **Screen buffer: grapheme cluster widths**
+  - Combining marks, ZWJ sequences and skin tone modifiers are kept with their base character (cluster pool, max 8 code points, 4096 distinct clusters per screen; beyond that the extra marks are dropped)
+  - Not done: variation selector U+FE0F does not widen a narrow base to 2 columns; regional indicator pairs (flags) take 2 cells; Hangul jamo sequences are not composed
+  - `get_scrollback` lines are limited to 4096 bytes per line
   - Impact: Low
 
 - [ ] **`pshellctl expect` / `expect-incoming` do not JSON-escape the pattern**
