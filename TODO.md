@@ -149,13 +149,12 @@
 - [ ] **Screen buffer: grapheme cluster widths**
   - Combining marks, ZWJ sequences and skin tone modifiers are kept with their base character (cluster pool, max 8 code points, 4096 distinct clusters per screen; beyond that the extra marks are dropped)
   - U+FE0F widens a narrow base from a fixed emoji table (`utf8_is_emoji_vs_base`), flags are one 2-column cluster, Hangul jamo attach to the leading jamo (width tables are hand-maintained, not generated from Unicode data)
-  - Not done: keycap sequences (`1` U+FE0F U+20E3), FE0F in the last column, tag sequences (subdivision flags)
-  - `get_scrollback` lines are limited to 4096 bytes per line
+  - Keycap sequences, FE0F in the last column (the cluster moves to the next line) and tag sequences (subdivision flags) are handled
   - Impact: Low
 
 - [ ] **`pshellctl attach` limitations**
   - Output is dropped for a terminal that cannot keep up; limit is `[sessions] max_attach` (default 16)
-  - The initial redraw has colours and attributes, but not the terminal modes of the program (alternate screen, cursor visibility, mouse/paste modes)
+  - Modes the screen does not track are not replayed (origin mode, keypad mode, character sets, window title); the cursor shape is not restored
 
 ### Medium Priority
 

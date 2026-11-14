@@ -746,7 +746,7 @@ static void *expect_worker_thread(void *arg) {
         }
         
         int cursor_row = 0, cursor_col = 0;
-        session_get_cursor_position(job->session, &cursor_row, &cursor_col);
+        session_get_expect_cursor(job->session, &cursor_row, &cursor_col);
         int relative_line = matched_line - cursor_row;
         
         size_t pos = 0;
@@ -941,57 +941,29 @@ static void handle_get_scrollback(socket_connection_t *conn, json_value_t *param
         count = scrollback_used - start_line;
     }
     
-    /* Build response with lines array */
-    char result[8192];
-    int offset = snprintf(result, sizeof(result), 
-                         "{\"scrollback_size\":%d,\"scrollback_used\":%d,\"start_line\":%d,\"count\":%d,\"lines\":[",
-                         scrollback_size, scrollback_used, start_line, count);
-    
-    for (int i = 0; i < count && offset < (int)sizeof(result) - 100; i++) {
-        char line_buffer[4096];
-        ssize_t line_len = session_get_scrollback_line(session, start_line + i, line_buffer, sizeof(line_buffer));
-        
-        if (line_len < 0) break;
-        
-        /* Check if line was truncated */
-        if (line_len >= (ssize_t)sizeof(line_buffer)) {
-            /* Line too long - skip or send error */
-            log_warn("Scrollback line %d truncated (%zd bytes)", start_line + i, line_len);
-            /* Continue with truncated line */
-        }
-
-        if (i > 0) {
-            int n = snprintf(result + offset, sizeof(result) - offset, ",");
-            if (n < 0 || (size_t)n >= sizeof(result) - offset) break;
-            offset += (size_t)n;
-        }
-
-        int n = snprintf(result + offset, sizeof(result) - offset, "\"");
-        if (n < 0 || (size_t)n >= sizeof(result) - offset) break;
-        offset += (size_t)n;
-
-        /* Escape line for JSON */
-        for (ssize_t j = 0; j < line_len && offset < (int)sizeof(result) - 10; j++) {
-            switch (line_buffer[j]) {
-                case '\n': offset += snprintf(result + offset, sizeof(result) - offset, "\\n"); break;
-                case '\r': offset += snprintf(result + offset, sizeof(result) - offset, "\\r"); break;
-                case '\t': offset += snprintf(result + offset, sizeof(result) - offset, "\\t"); break;
-                case '"': offset += snprintf(result + offset, sizeof(result) - offset, "\\\""); break;
-                case '\\': offset += snprintf(result + offset, sizeof(result) - offset, "\\\\"); break;
-                default:
-                    if ((unsigned char)line_buffer[j] >= 32) {
-                        result[offset++] = line_buffer[j];
-                    }
-                    break;
-            }
-        }
-        
-        offset += snprintf(result + offset, sizeof(result) - offset, "\"");
+    /* Build response with lines array (heap, no per-line limit) */
+    int got = 0;
+    char *lines = session_get_scrollback_json(session, start_line, count,
+                                              SESSION_SCROLLBACK_MAX_BYTES, &got);
+    if (!lines) {
+        send_error(conn, "Failed to read scrollback");
+        return;
     }
     
-    snprintf(result + offset, sizeof(result) - offset, "]}");
+    size_t cap = strlen(lines) + 256;
+    char *result = malloc(cap);
+    if (!result) {
+        free(lines);
+        send_error(conn, "Out of memory");
+        return;
+    }
+    snprintf(result, cap,
+             "{\"scrollback_size\":%d,\"scrollback_used\":%d,\"start_line\":%d,\"count\":%d,\"lines\":[%s]}",
+             scrollback_size, scrollback_used, start_line, got, lines);
+    free(lines);
     
     send_success(conn, result);
+    free(result);
 }
 
 static void handle_get_lines(socket_connection_t *conn, json_value_t *params, session_manager_t *mgr) {

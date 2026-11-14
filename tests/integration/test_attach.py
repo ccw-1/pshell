@@ -189,6 +189,32 @@ max_attach = 2
         f.send("\x1d")
         f.wait()
 
+        # terminal modes: the redraw carries alternate screen, mouse, paste, cursor
+        rc, out = ctl(sock, "send", sid,
+                      "printf '\\\\e[?1000h\\\\e[?1006h\\\\e[?2004h\\\\e[?25l\\\\e[?1049h\\\\e[HALTSCREEN%sX' $((1+1))\n")
+        check("mode output sent", rc == 0, out)
+        time.sleep(0.5)
+        g = Attach(sock, sid)
+        check("redraw shows the alternate screen", g.read_until("ALTSCREEN2X"), repr(g.buf))
+        text = g.buf.decode(errors="replace")
+        check("redraw draws the main screen first",
+              "ATTACH3OK" in text and text.index("ATTACH3OK") < text.index("\x1b[?1049h") < text.index("ALTSCREEN2X"),
+              repr(g.buf))
+        check("redraw enables mouse tracking", "\x1b[?1000h" in text and "\x1b[?1006h" in text, repr(g.buf))
+        check("redraw enables bracketed paste", "\x1b[?2004h" in text, repr(g.buf))
+        check("redraw hides the cursor", "\x1b[?25l" in text, repr(g.buf))
+        g.send("\x1d")
+        g.wait()
+        tail = g.buf.decode(errors="replace").rsplit("[detached]", 1)[0]
+        tail = tail[tail.rindex("ALTSCREEN2X"):]
+        check("detach leaves the alternate screen", "\x1b[?1049l" in tail, repr(tail))
+        check("detach switches mouse and paste off",
+              "\x1b[?1000l" in tail and "\x1b[?1006l" in tail and "\x1b[?2004l" in tail, repr(tail))
+        check("detach shows the cursor again", "\x1b[?25h" in tail, repr(tail))
+        rc, out = ctl(sock, "send", sid,
+                      "printf '\\\\e[?1049l\\\\e[?1000l\\\\e[?1006l\\\\e[?2004l\\\\e[?25h'\n")
+        time.sleep(0.5)
+
         # shell exits -> attached terminal is told the session ended
         b.send("exit\n")
         check("session end reported", b.read_until("[session ended]"), b.buf.decode(errors="replace"))

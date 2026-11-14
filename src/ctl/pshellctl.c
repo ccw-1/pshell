@@ -670,6 +670,89 @@ static void attach_send_resize(const char *socket_path, const char *session_id,
     socket_client_disconnect(&rc);
 }
 
+/* Private modes the session switched on the user's terminal, followed in the
+ * output stream (and in the redraw the daemon sends first), so detaching can
+ * switch them off again. Only "CSI ? Ps ; Ps h|l" matters. */
+typedef struct {
+    int state;            /* 0 text, 1 after ESC, 2 after ESC [, 3 after ESC [ ? */
+    int param;
+    int params[16];
+    int count;
+    int alt;              /* 47, 1047 or 1049 while the alternate screen is on */
+    int mouse;            /* active mouse tracking mode */
+    int mouse_enc;        /* active mouse encoding */
+    bool cursor_hidden, app_keys, no_wrap, focus, paste;
+} attach_modes_t;
+
+static void attach_modes_set(attach_modes_t *m, int mode, bool on) {
+    switch (mode) {
+        case 1:    m->app_keys = on; break;
+        case 7:    m->no_wrap = !on; break;
+        case 25:   m->cursor_hidden = !on; break;
+        case 47: case 1047: case 1049: m->alt = on ? mode : 0; break;
+        case 9: case 1000: case 1001: case 1002: case 1003:
+            if (on) m->mouse = mode; else if (m->mouse == mode) m->mouse = 0;
+            break;
+        case 1005: case 1006: case 1015:
+            if (on) m->mouse_enc = mode; else if (m->mouse_enc == mode) m->mouse_enc = 0;
+            break;
+        case 1004: m->focus = on; break;
+        case 2004: m->paste = on; break;
+        default: break;
+    }
+}
+
+static void attach_modes_feed(attach_modes_t *m, const char *buf, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)buf[i];
+        switch (m->state) {
+            case 0:
+                if (ch == 0x1b) m->state = 1;
+                break;
+            case 1:
+                m->state = (ch == '[') ? 2 : (ch == 0x1b ? 1 : 0);
+                break;
+            case 2:
+                if (ch == '?') { m->state = 3; m->param = 0; m->count = 0; }
+                else m->state = (ch == 0x1b) ? 1 : 0;
+                break;
+            default:
+                if (ch >= '0' && ch <= '9') {
+                    if (m->param < 100000) m->param = m->param * 10 + (ch - '0');
+                } else if (ch == ';') {
+                    if (m->count < 16) m->params[m->count++] = m->param;
+                    m->param = 0;
+                } else {
+                    if (ch == 'h' || ch == 'l') {
+                        if (m->count < 16) m->params[m->count++] = m->param;
+                        for (int k = 0; k < m->count; k++) {
+                            attach_modes_set(m, m->params[k], ch == 'h');
+                        }
+                    }
+                    m->state = (ch == 0x1b) ? 1 : 0;
+                }
+                break;
+        }
+    }
+}
+
+/* Switch off what the session switched on; always leave the cursor visible
+ * and the text attributes plain */
+static void attach_modes_restore(const attach_modes_t *m) {
+    char out[256];
+    size_t n = 0;
+    n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[0m");
+    if (m->mouse_enc) n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[?%dl", m->mouse_enc);
+    if (m->mouse) n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[?%dl", m->mouse);
+    if (m->focus) n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[?1004l");
+    if (m->paste) n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[?2004l");
+    if (m->app_keys) n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[?1l");
+    if (m->no_wrap) n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[?7h");
+    if (m->alt) n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[?%dl", m->alt);
+    n += (size_t)snprintf(out + n, sizeof(out) - n, "\x1b[?25h");
+    write_all(STDOUT_FILENO, out, n);
+}
+
 static int cmd_attach(socket_client_t *client, int argc, char **argv) {
     if (argc < 1) {
         fprintf(stderr, "Usage: attach <session-id>\n");
@@ -734,6 +817,8 @@ static int cmd_attach(socket_client_t *client, int argc, char **argv) {
     sigaction(SIGHUP, &sa, NULL);
     
     const char *why = "session ended";
+    attach_modes_t modes;
+    memset(&modes, 0, sizeof(modes));
     struct pollfd fds[2];
     fds[0].fd = STDIN_FILENO;
     fds[0].events = POLLIN;
@@ -759,6 +844,7 @@ static int cmd_attach(socket_client_t *client, int argc, char **argv) {
             char buf[4096];
             ssize_t n = read(client->fd, buf, sizeof(buf));
             if (n > 0) {
+                attach_modes_feed(&modes, buf, (size_t)n);
                 if (write_all(STDOUT_FILENO, buf, (size_t)n) < 0) break;
             } else if (n == 0 || (errno != EINTR && errno != EAGAIN)) {
                 break;  /* session ended or daemon went away */
@@ -796,6 +882,7 @@ static int cmd_attach(socket_client_t *client, int argc, char **argv) {
         }
     }
     
+    attach_modes_restore(&modes);
     tcsetattr(STDIN_FILENO, TCSANOW, &orig);
     printf("\r\n[%s]\r\n", g_attach_quit ? "terminated" : why);
     return 0;
@@ -833,14 +920,22 @@ static int cmd_scrollback(socket_client_t *client, int argc, char **argv) {
              session_id, start_line, count);
     
     /* Send request */
-    char response[16384];
-    if (socket_client_send_request(client, request, response, sizeof(response)) < 0) {
+    /* Up to SESSION_SCROLLBACK_MAX_BYTES of lines plus the JSON frame */
+    size_t response_size = 64 * 1024;
+    char *response = malloc(response_size);
+    if (!response) {
+        fprintf(stderr, "Out of memory\n");
+        return 1;
+    }
+    if (socket_client_send_request(client, request, response, response_size) < 0) {
         fprintf(stderr, "Failed to send request\n");
+        free(response);
         return 1;
     }
     
     /* Parse response */
     json_value_t *root = json_parse(response);
+    free(response);
     if (!root) {
         fprintf(stderr, "Failed to parse response\n");
         return 1;

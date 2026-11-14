@@ -829,11 +829,48 @@ void test_grapheme_widths(void) {
     }
     screen_buffer_destroy(screen);
     
-    /* FE0F in the last column cannot widen: nothing breaks */
+    /* FE0F in the last column: the heart moves to the next line (a wide character that does not fit) */
     screen = screen_buffer_create(2, 4, 0);
     vt100_parser_init(&parser);
     feed_text(screen, &parser, "abc\xe2\x9d\xa4\xef\xb8\x8f" "d");
-    if (screen->cursor.row < 0 || screen->cursor.row > 1) { screen_buffer_destroy(screen); FAIL("cursor after FE0F in last column"); }
+    c = screen->cells;
+    if (c[3].ch != ' ' || screen_buffer_cell_codepoints(screen, &c[4], cps) != 2 ||
+        c[5].ch != CELL_CONTINUATION || c[6].ch != 'd') {
+        screen_buffer_destroy(screen); FAIL("FE0F in the last column");
+    }
+    screen_buffer_destroy(screen);
+    
+    /* ... at the bottom of the screen the line scrolls; with auto wrap off nothing moves */
+    screen = screen_buffer_create(2, 4, 0);
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "ab\r\ncde\xe2\x9d\xa4\xef\xb8\x8f" "f");
+    c = screen->cells;
+    if (c[0].ch != 'c' || c[3].ch != ' ' || screen_buffer_cell_codepoints(screen, &c[4], cps) != 2 || c[6].ch != 'f') {
+        screen_buffer_destroy(screen); FAIL("FE0F in the last column of the last row");
+    }
+    screen_buffer_destroy(screen);
+    screen = screen_buffer_create(2, 4, 0);
+    vt100_parser_init(&parser);
+    screen->auto_wrap = false;
+    feed_text(screen, &parser, "abc\xe2\x9d\xa4\xef\xb8\x8f" "d");
+    if (screen->cells[3].ch != 'd' || screen->cells[4].ch != ' ') { screen_buffer_destroy(screen); FAIL("FE0F with auto wrap off"); }
+    screen_buffer_destroy(screen);
+    
+    /* Keycap 1 FE0F U+20E3 takes 2 columns, without FE0F it stays narrow; tag sequences stay one cell */
+    screen = screen_buffer_create(3, 12, 0);
+    vt100_parser_init(&parser);
+    feed_text(screen, &parser, "1\xef\xb8\x8f\xe2\x83\xa3" "z" "2\xe2\x83\xa3" "y");
+    c = screen->cells;
+    if (screen_buffer_cell_codepoints(screen, &c[0], cps) != 3 || c[1].ch != CELL_CONTINUATION || c[2].ch != 'z') {
+        screen_buffer_destroy(screen); FAIL("keycap");
+    }
+    if (c[3].ch == CELL_CONTINUATION || c[4].ch != 'y') { screen_buffer_destroy(screen); FAIL("keycap without FE0F stays narrow"); }
+    feed_text(screen, &parser, "\r\n\xf0\x9f\x8f\xb4\xf3\xa0\x81\xa7\xf3\xa0\x81\xa2\xf3\xa0\x81\xa5\xf3\xa0\x81\xae"
+                               "\xf3\xa0\x81\xa7\xf3\xa0\x81\xbf" "x");
+    c = screen->cells + 12;
+    if (screen_buffer_cell_codepoints(screen, &c[0], cps) != 7 || c[1].ch != CELL_CONTINUATION || c[2].ch != 'x') {
+        screen_buffer_destroy(screen); FAIL("tag sequence");
+    }
     screen_buffer_destroy(screen);
     PASS();
 }
@@ -888,6 +925,81 @@ void test_huge_csi_parameters(void) {
 }
 
 
+/* Private modes and the alternate screen */
+void test_private_modes(void) {
+    TEST("private_modes_and_alt_screen");
+    
+    vt100_parser_t parser;
+    vt100_parser_init(&parser);
+    screen_buffer_t *screen = screen_buffer_create(4, 10, 20);
+    char buf[256];
+    
+    /* Defaults emit nothing */
+    assert(screen_buffer_modes_to_ansi(screen, buf, sizeof(buf)) == 0);
+    
+    feed_text(screen, &parser, "\x1b[?25l\x1b[?1h\x1b[?1000;1006h\x1b[?2004h\x1b[?1004h\x1b[?7l");
+    assert(!screen->cursor.visible && screen->app_cursor_keys && !screen->auto_wrap);
+    assert(screen->mouse_track == 1000 && screen->mouse_encoding == 1006);
+    assert(screen->bracketed_paste && screen->focus_events);
+    size_t n = screen_buffer_modes_to_ansi(screen, buf, sizeof(buf));
+    assert(n > 0 && strstr(buf, "\x1b[?25l") && strstr(buf, "\x1b[?1h") && strstr(buf, "\x1b[?7l"));
+    assert(strstr(buf, "\x1b[?1000h") && strstr(buf, "\x1b[?1006h"));
+    assert(strstr(buf, "\x1b[?2004h") && strstr(buf, "\x1b[?1004h"));
+    
+    /* Reset of another tracking mode keeps the active one */
+    feed_text(screen, &parser, "\x1b[?1002l");
+    assert(screen->mouse_track == 1000);
+    feed_text(screen, &parser, "\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1l\x1b[?2004l\x1b[?1004l\x1b[?7h");
+    assert(screen_buffer_modes_to_ansi(screen, buf, sizeof(buf)) == 0);
+    
+    /* Plain (non ?) set/reset mode is ignored */
+    feed_text(screen, &parser, "\x1b[25l");
+    assert(screen->cursor.visible);
+    
+    /* Alternate screen 1049: main content comes back, cursor restored */
+    feed_text(screen, &parser, "main\r\nline2\x1b[3;4H");
+    for (int i = 0; i < 8; i++) feed_text(screen, &parser, "\r\nx");   /* scroll some lines */
+    int used_before = screen->scrollback_used;
+    assert(used_before > 0);
+    feed_text(screen, &parser, "\x1b[2;3H\x1b[?1049h");
+    assert(screen->in_alt);
+    char line[64];
+    screen_buffer_get_line(screen, 0, line, sizeof(line));
+    assert(line[0] == ' ');                       /* alternate screen starts blank */
+    feed_text(screen, &parser, "ALT\r\n\r\n\r\n\r\n\r\nmore");
+    assert(screen->scrollback_used == used_before);   /* no scrollback in alt */
+    size_t main_len = 0;
+    char *main_ansi = screen_buffer_render_main_ansi(screen, &main_len);
+    assert(main_ansi != NULL && main_len > 0);
+    free(main_ansi);
+    feed_text(screen, &parser, "\x1b[?1049l");
+    assert(!screen->in_alt);
+    assert(screen->cursor.row == 1 && screen->cursor.col == 2);   /* restored */
+    assert(screen_buffer_render_main_ansi(screen, &main_len) == NULL);
+    
+    /* 1047 clears the alternate screen when leaving; 47 does not */
+    feed_text(screen, &parser, "\x1b[?47h");
+    feed_text(screen, &parser, "\x1b[HKEEP\x1b[?47l\x1b[?47h");
+    screen_buffer_get_line(screen, 0, line, sizeof(line));
+    assert(strncmp(line, "KEEP", 4) == 0);
+    feed_text(screen, &parser, "\x1b[?47l\x1b[?1047h\x1b[HGONE\x1b[?1047l\x1b[?1047h");
+    screen_buffer_get_line(screen, 0, line, sizeof(line));
+    assert(line[0] == ' ');
+    feed_text(screen, &parser, "\x1b[?1047l");
+    
+    /* Resize while the alternate screen is up keeps both grids consistent */
+    feed_text(screen, &parser, "\x1b[?1049h");
+    assert(screen_buffer_resize(screen, 6, 20) == 0);
+    assert(screen->in_alt && screen->other_cells);
+    feed_text(screen, &parser, "\x1b[6;20Hz\x1b[?1049l");
+    assert(!screen->in_alt);
+    screen_buffer_get_line(screen, 0, line, sizeof(line));
+    assert(line[0] != '\0');
+    
+    screen_buffer_destroy(screen);
+    PASS();
+}
+
 int main(void) {
     printf("=== Terminal Emulation Tests ===\n\n");
     
@@ -923,6 +1035,8 @@ int main(void) {
     test_combining_wrap_and_copy();
     test_grapheme_widths();
     test_cluster_pool_limits();
+    /* Private modes */
+    test_private_modes();
     /* Robustness */
     test_huge_csi_parameters();
     

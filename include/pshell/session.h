@@ -406,8 +406,27 @@ int session_get_scrollback_used(const session_t *session);
  */
 ssize_t session_get_scrollback_line(const session_t *session, int line_index, char *buffer, size_t size);
 
+/**
+ * Scrollback lines as the inside of a JSON array ("a","b",...), malloc'd.
+ * Lines are not limited in length; the output stops once it would exceed
+ * max_bytes (at least one line is always returned).
+ * @param out_count Number of lines included (out)
+ * @return String to free, or NULL on error / no line available
+ */
+char *session_get_scrollback_json(const session_t *session, int start_line, int count,
+                                  size_t max_bytes, int *out_count);
+
+/* Byte budget of one get_scrollback response (clients read 64 KB) */
+#define SESSION_SCROLLBACK_MAX_BYTES (48 * 1024)
+
 
 
 void session_get_cursor_position(const session_t *session, int *row, int *col);
+
+/**
+ * Cursor position as of the last PTY output, safe to call from a thread other
+ * than the event loop (expect workers).
+ */
+void session_get_expect_cursor(session_t *session, int *row, int *col);
 
 #endif /* PSHELL_SESSION_H */

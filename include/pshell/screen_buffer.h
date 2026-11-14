@@ -104,6 +104,21 @@ typedef struct {
     bool origin_mode;     /* Origin mode (cursor addressing) */
     bool insert_mode;     /* Insert mode */
     
+    /* DEC private modes the screen only records (the application inside the
+     * session switches them; attach replays them on the user's terminal) */
+    bool app_cursor_keys;   /* ?1 */
+    bool bracketed_paste;   /* ?2004 */
+    bool focus_events;      /* ?1004 */
+    int mouse_track;        /* 0, 9, 1000, 1001, 1002 or 1003 */
+    int mouse_encoding;     /* 0, 1005, 1006 or 1015 */
+    
+    /* Alternate screen (?47, ?1047, ?1049): `cells` is always the grid being
+     * shown; while in_alt is set, other_cells holds the main grid. The alternate
+     * screen has no scrollback. */
+    bool in_alt;
+    int alt_mode;           /* Mode that entered it: 47, 1047 or 1049 */
+    char_cell_t *other_cells;
+    
     /* Pool of code point sequences for cells with combining marks. Entries are
      * de-duplicated and never freed, so cell indexes stay valid while cells are
      * copied between screen and scrollback. */
@@ -193,6 +208,22 @@ size_t screen_buffer_get_text(const screen_buffer_t *screen, char *buffer, size_
  * failure. *out_len receives the length.
  */
 char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len);
+
+/**
+ * Like screen_buffer_render_ansi() for the main screen while the alternate
+ * screen is shown. Returns NULL when the alternate screen is not active (or
+ * on allocation failure).
+ */
+char *screen_buffer_render_main_ansi(const screen_buffer_t *screen, size_t *out_len);
+
+/**
+ * Write the sequences that put a terminal into the recorded private modes
+ * (hidden cursor, application cursor keys, mouse reporting, bracketed paste,
+ * focus events, no auto-wrap). Modes at their defaults emit nothing. The
+ * alternate screen is not included. Returns the bytes written (NUL
+ * terminated); size 128 is always enough.
+ */
+size_t screen_buffer_modes_to_ansi(const screen_buffer_t *screen, char *buf, size_t size);
 
 /**
  * Encode the cells of a line (screen or scrollback row) as UTF-8.

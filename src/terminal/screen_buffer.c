@@ -139,10 +139,30 @@ screen_buffer_t *screen_buffer_create(int rows, int cols, int scrollback_lines) 
 void screen_buffer_destroy(screen_buffer_t *screen) {
     if (!screen) return;
     free(screen->cells);
+    free(screen->other_cells);
     free(screen->scrollback);
     free(screen->tab_stops);
     free(screen->clusters);
     free(screen);
+}
+
+/* A copy of a grid in the new size: what fits is kept, the rest is blank */
+static char_cell_t *resize_grid(const char_cell_t *old, int old_rows, int old_cols,
+                                int rows, int cols) {
+    char_cell_t *grid = calloc((size_t)rows * cols, sizeof(char_cell_t));
+    if (!grid) return NULL;
+    int copy_rows = (rows < old_rows) ? rows : old_rows;
+    int copy_cols = (cols < old_cols) ? cols : old_cols;
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            if (r < copy_rows && c < copy_cols) {
+                grid[(size_t)r * cols + c] = old[(size_t)r * old_cols + c];
+            } else {
+                clear_cell(&grid[(size_t)r * cols + c]);
+            }
+        }
+    }
+    return grid;
 }
 
 int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
@@ -153,30 +173,19 @@ int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
         return -1;
     }
 
-    /* Allocate new cells */
-    char_cell_t *new_cells = calloc((size_t)rows * cols, sizeof(char_cell_t));
+    /* Allocate new cells (and the hidden main grid while the alternate screen is up) */
+    char_cell_t *new_cells = resize_grid(screen->cells, screen->rows, screen->cols, rows, cols);
     if (!new_cells) return -1;
+    char_cell_t *new_other = NULL;
+    if (screen->other_cells) {
+        new_other = resize_grid(screen->other_cells, screen->rows, screen->cols, rows, cols);
+        if (!new_other) {
+            free(new_cells);
+            return -1;
+        }
+    }
     
-    /* Copy old content (as much as fits) */
-    int copy_rows = (rows < screen->rows) ? rows : screen->rows;
     int copy_cols = (cols < screen->cols) ? cols : screen->cols;
-    
-    for (int r = 0; r < copy_rows; r++) {
-        for (int c = 0; c < copy_cols; c++) {
-            new_cells[r * cols + c] = screen->cells[r * screen->cols + c];
-        }
-        /* Clear remaining columns in new buffer */
-        for (int c = copy_cols; c < cols; c++) {
-            clear_cell(&new_cells[r * cols + c]);
-        }
-    }
-    
-    /* Clear remaining rows in new buffer */
-    for (int r = copy_rows; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            clear_cell(&new_cells[r * cols + c]);
-        }
-    }
     
     /* Rebuild the scrollback for the new width. Its rows are `cols` cells
      * wide, so keeping the old buffer after a resize makes
@@ -187,11 +196,13 @@ int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
     if (screen->scrollback_size > 0) {
         if ((size_t)screen->scrollback_size > SIZE_MAX / (size_t)cols / sizeof(char_cell_t)) {
             free(new_cells);
+            free(new_other);
             return -1;
         }
         new_scrollback = calloc((size_t)screen->scrollback_size * cols, sizeof(char_cell_t));
         if (!new_scrollback) {
             free(new_cells);
+            free(new_other);
             return -1;
         }
         for (int i = 0; i < screen->scrollback_used; i++) {
@@ -214,6 +225,7 @@ int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
     if (!new_tabs) {
         free(new_scrollback);
         free(new_cells);
+        free(new_other);
         return -1;
     }
     
@@ -229,9 +241,11 @@ int screen_buffer_resize(screen_buffer_t *screen, int rows, int cols) {
     
     /* Replace old buffers */
     free(screen->cells);
+    free(screen->other_cells);
     free(screen->tab_stops);
     free(screen->scrollback);
     screen->cells = new_cells;
+    screen->other_cells = new_other;
     screen->tab_stops = new_tabs;
     screen->scrollback = new_scrollback;
     screen->scrollback_pos = new_sb_pos;
@@ -358,19 +372,42 @@ static void cluster_append(screen_buffer_t *screen, char_cell_t *cell, uint32_t 
     if (idx >= 0) cell->ch = CELL_CLUSTER_FLAG | (uint32_t)idx;
 }
 
-/* U+FE0F after a narrow emoji-capable character: show it as a 2-column emoji,
- * taking the next cell (when there is one and the cursor is right behind). */
+/* A narrow emoji-capable character followed by U+FE0F (or a keycap sequence)
+ * is shown as a 2-column emoji. It takes the next cell when the cursor is
+ * right behind it; when it sits in the last column (the cursor already wrapped)
+ * it moves to the start of the next line, like a wide character that does not
+ * fit. Nothing happens when there is no room (single column, no auto wrap). */
 static void widen_last_cell(screen_buffer_t *screen, char_cell_t *target) {
+    if (screen->last_width != 1) return;
+    int row = screen->last_row;
     int col = screen->last_col + 1;
-    if (screen->last_width != 1 || col >= screen->cols) return;
-    if (screen->cursor.row != screen->last_row || screen->cursor.col != col) return;
-    char_cell_t *right = get_cell(screen, screen->last_row, col);
-    if (!right) return;
-    break_wide(screen, screen->last_row, col);
-    right->ch = CELL_CONTINUATION;
-    right->attr = target->attr;
-    screen->last_width = 2;
-    screen->cursor.col++;
+    if (col < screen->cols) {
+        if (screen->cursor.row != row || screen->cursor.col != col) return;
+        char_cell_t *right = get_cell(screen, row, col);
+        if (!right) return;
+        break_wide(screen, row, col);
+        right->ch = CELL_CONTINUATION;
+        right->attr = target->attr;
+        screen->last_width = 2;
+        screen->cursor.col++;
+    } else {
+        if (!screen->auto_wrap || screen->cols < 2) return;
+        if (screen->cursor.row != row + 1 || screen->cursor.col != 0) return;
+        row = screen->cursor.row;
+        char_cell_t *dst = get_cell(screen, row, 0);
+        char_cell_t *dst2 = get_cell(screen, row, 1);
+        if (!dst || !dst2) return;
+        break_wide(screen, row, 0);
+        break_wide(screen, row, 1);
+        *dst = *target;
+        dst2->ch = CELL_CONTINUATION;
+        dst2->attr = target->attr;
+        clear_cell(target);
+        screen->last_row = row;
+        screen->last_col = 0;
+        screen->last_width = 2;
+        screen->cursor.col = 2;
+    }
     if (screen->cursor.col >= screen->cols) {
         if (screen->auto_wrap) {
             wrap_to_next_line(screen);
@@ -390,6 +427,9 @@ void screen_buffer_put_codepoint(screen_buffer_t *screen, uint32_t cp) {
             cluster_append(screen, target, cp);
             if (cp == 0xFE0F && n == 1 && utf8_is_emoji_vs_base(cps[0])) {
                 widen_last_cell(screen, target);
+            } else if (cp == 0x20E3 && n == 2 && cps[1] == 0xFE0F &&
+                       (cps[0] == '#' || cps[0] == '*' || (cps[0] >= '0' && cps[0] <= '9'))) {
+                widen_last_cell(screen, target);    /* keycap: 1 FE0F 20E3 */
             }
         }
         return;                 /* combining / zero-width: no cell of its own */
@@ -632,7 +672,7 @@ void screen_buffer_scroll_up(screen_buffer_t *screen, int n) {
     n = clamp_count(n, bottom - top + 1);
     
     /* Add top line to scrollback before scrolling */
-    if (top == 0) {
+    if (top == 0 && !screen->in_alt) {
         add_to_scrollback(screen, &screen->cells[0]);
     }
     
@@ -899,6 +939,60 @@ void screen_buffer_clear_tab(screen_buffer_t *screen) {
     }
 }
 
+/* Show the alternate grid (on) or the main grid (off). mode is the private
+ * mode that asked for it: 1049 also saves/restores the cursor, 1047 and 1049
+ * start the alternate screen blank, 1047 blanks it again when leaving. */
+static void set_alt_screen(screen_buffer_t *screen, int mode, bool on) {
+    if (on == screen->in_alt) return;
+    
+    if (on) {
+        if (!screen->other_cells) {
+            screen->other_cells = calloc((size_t)screen->rows * screen->cols, sizeof(char_cell_t));
+            if (!screen->other_cells) return;
+        }
+        if (mode == 1049) screen_buffer_save_cursor(screen);
+    } else if (mode == 1047 || screen->alt_mode == 1047) {
+        for (int i = 0; i < screen->rows * screen->cols; i++) clear_cell(&screen->cells[i]);
+    }
+    
+    char_cell_t *shown = screen->other_cells;
+    screen->other_cells = screen->cells;
+    screen->cells = shown;
+    screen->in_alt = on;
+    screen->last_row = -1;
+    if (on) {
+        screen->alt_mode = mode;
+        if (mode != 47) {
+            for (int i = 0; i < screen->rows * screen->cols; i++) clear_cell(&screen->cells[i]);
+        }
+    } else if (screen->alt_mode == 1049) {
+        screen_buffer_restore_cursor(screen);
+    }
+}
+
+/* DECSET / DECRST for the modes the screen records */
+static void set_private_mode(screen_buffer_t *screen, int mode, bool on) {
+    switch (mode) {
+        case 1:    screen->app_cursor_keys = on; break;
+        case 7:    screen->auto_wrap = on; break;
+        case 25:   screen->cursor.visible = on; break;
+        case 47: case 1047: case 1049:
+            set_alt_screen(screen, mode, on);
+            break;
+        case 9: case 1000: case 1001: case 1002: case 1003:
+            if (on) screen->mouse_track = mode;
+            else if (screen->mouse_track == mode) screen->mouse_track = 0;
+            break;
+        case 1005: case 1006: case 1015:
+            if (on) screen->mouse_encoding = mode;
+            else if (screen->mouse_encoding == mode) screen->mouse_encoding = 0;
+            break;
+        case 1004: screen->focus_events = on; break;
+        case 2004: screen->bracketed_paste = on; break;
+        default: break;
+    }
+}
+
 void screen_buffer_process_sequence(screen_buffer_t *screen, const vt100_sequence_t *seq) {
     /* Anything but more text interrupts a partial UTF-8 character and ends
      * the run of characters a combining mark could attach to */
@@ -982,6 +1076,15 @@ void screen_buffer_process_sequence(screen_buffer_t *screen, const vt100_sequenc
             
         case VT100_SEQ_BELL:
             /* Bell - could trigger callback */
+            break;
+            
+        case VT100_SEQ_SET_MODE:
+        case VT100_SEQ_RESET_MODE:
+            if (seq->private_mode) {
+                for (int i = 0; i < seq->param_count; i++) {
+                    set_private_mode(screen, seq->params[i], seq->type == VT100_SEQ_SET_MODE);
+                }
+            }
             break;
             
         default:
@@ -1081,13 +1184,13 @@ static bool cell_is_trailing_blank(const char_cell_t *cell) {
            !cell->attr.reverse && !cell->attr.underline && !cell->attr.strikethrough;
 }
 
-char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len) {
+static char *render_grid(const screen_buffer_t *screen, const char_cell_t *grid, size_t *out_len) {
     ansi_out_t o = {0};
     char_attr_t cur;
     memset(&cur, 0, sizeof(cur));
     
     for (int r = 0; r < screen->rows; r++) {
-        const char_cell_t *row_cells = &screen->cells[(size_t)r * screen->cols];
+        const char_cell_t *row_cells = &grid[(size_t)r * screen->cols];
         int last = screen->cols - 1;
         while (last >= 0 && cell_is_trailing_blank(&row_cells[last])) last--;
         
@@ -1128,6 +1231,35 @@ char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len) 
     }
     if (out_len) *out_len = o.len;
     return o.data;
+}
+
+char *screen_buffer_render_ansi(const screen_buffer_t *screen, size_t *out_len) {
+    return render_grid(screen, screen->cells, out_len);
+}
+
+char *screen_buffer_render_main_ansi(const screen_buffer_t *screen, size_t *out_len) {
+    if (!screen->in_alt || !screen->other_cells) {
+        if (out_len) *out_len = 0;
+        return NULL;
+    }
+    return render_grid(screen, screen->other_cells, out_len);
+}
+
+size_t screen_buffer_modes_to_ansi(const screen_buffer_t *screen, char *buf, size_t size) {
+    size_t n = 0;
+    char tmp[128];
+    if (!screen->cursor.visible) n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "\x1b[?25l");
+    if (screen->app_cursor_keys) n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "\x1b[?1h");
+    if (!screen->auto_wrap) n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "\x1b[?7l");
+    if (screen->mouse_track) n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "\x1b[?%dh", screen->mouse_track);
+    if (screen->mouse_encoding) n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "\x1b[?%dh", screen->mouse_encoding);
+    if (screen->focus_events) n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "\x1b[?1004h");
+    if (screen->bracketed_paste) n += (size_t)snprintf(tmp + n, sizeof(tmp) - n, "\x1b[?2004h");
+    if (!buf || size == 0) return n;
+    if (n >= size) n = size - 1;
+    memcpy(buf, tmp, n);
+    buf[n] = '\0';
+    return n;
 }
 
 size_t screen_buffer_text_size(const screen_buffer_t *screen) {

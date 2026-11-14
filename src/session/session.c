@@ -6,6 +6,7 @@
 #include "pshell/vt100_parser.h"
 #include "pshell/screen_buffer.h"
 #include "pshell/utf8.h"
+#include "pshell/string_utils.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -98,6 +99,8 @@ struct session {
     size_t expect_buffer_used;
     uint64_t expect_base;
     int expect_refs;
+    int expect_cursor_row;     /* cursor after the last output (for expect workers; under expect_lock) */
+    int expect_cursor_col;
     session_line_no_t current_line_no;
     size_t current_line_offset;
     /* Serializes expect buffer/line state between the event loop (writer,
@@ -581,6 +584,11 @@ static void session_pty_callback(int fd, io_event_type_t events, void *user_data
                         screen_buffer_process_sequence(session->screen, &seq);
                     }
                 }
+                /* Expect workers must not read the live screen from their thread */
+                pthread_mutex_lock(&session->expect_lock);
+                screen_buffer_get_cursor(session->screen, &session->expect_cursor_row,
+                                         &session->expect_cursor_col);
+                pthread_mutex_unlock(&session->expect_lock);
             }
             
             log_debug("Read %zd bytes from PTY for session %s", n, session->id);
@@ -729,28 +737,61 @@ void session_attach_redraw(session_t *session, int fd) {
     char *body = screen_buffer_render_ansi(session->screen, &body_len);
     if (!body) return;
     
+    /* With the alternate screen up, draw the main screen first and then enter
+     * the alternate one on the user's terminal, so the application leaving it
+     * brings the main screen back */
+    size_t main_len = 0;
+    char *main_body = NULL;
+    bool in_alt = session->screen->in_alt;
+    if (in_alt) {
+        main_body = screen_buffer_render_main_ansi(session->screen, &main_len);
+        if (!main_body) {
+            free(body);
+            return;
+        }
+    }
+    
     int row = 0, col = 0;
     session_get_cursor_position(session, &row, &col);
     
+    char alt[64] = "";
+    int alt_len = 0;
+    if (in_alt) {
+        alt_len = snprintf(alt, sizeof(alt), "\x1b[%d;%dH\x1b[?%dh\x1b[2J\x1b[H",
+                           session->screen->saved.row + 1, session->screen->saved.col + 1,
+                           session->screen->alt_mode);
+    }
+    char modes[128];
+    size_t modes_len = screen_buffer_modes_to_ansi(session->screen, modes, sizeof(modes));
     char cursor[32];
     int cursor_len = snprintf(cursor, sizeof(cursor), "\x1b[%d;%dH", row + 1, col + 1);
     
-    size_t cap = body_len + 7 + (size_t)cursor_len + 1;
+    size_t cap = 7 + main_len + (size_t)alt_len + body_len + modes_len + (size_t)cursor_len + 1;
     char *out = malloc(cap);
     if (!out) {
         free(body);
+        free(main_body);
         return;
     }
     size_t pos = 0;
     memcpy(out, "\x1b[2J\x1b[H", 7);
     pos = 7;
+    if (in_alt) {
+        memcpy(out + pos, main_body, main_len);
+        pos += main_len;
+        memcpy(out + pos, alt, (size_t)alt_len);
+        pos += (size_t)alt_len;
+    }
     memcpy(out + pos, body, body_len);
     pos += body_len;
+    memcpy(out + pos, modes, modes_len);
+    pos += modes_len;
     memcpy(out + pos, cursor, (size_t)cursor_len);
     pos += (size_t)cursor_len;
     
     session_attach_write_wait(fd, out, pos);
     free(body);
+    free(main_body);
     free(out);
 }
 
@@ -1307,6 +1348,18 @@ void session_get_cursor_position(const session_t *session, int *row, int *col) {
     screen_buffer_get_cursor(session->screen, row, col);
 }
 
+void session_get_expect_cursor(session_t *session, int *row, int *col) {
+    if (!session) {
+        if (row) *row = 0;
+        if (col) *col = 0;
+        return;
+    }
+    pthread_mutex_lock(&session->expect_lock);
+    if (row) *row = session->expect_cursor_row;
+    if (col) *col = session->expect_cursor_col;
+    pthread_mutex_unlock(&session->expect_lock);
+}
+
 int session_get_fd(session_t *session) {
     if (!session || !session->pty) {
         return -1;
@@ -1712,4 +1765,56 @@ ssize_t session_get_scrollback_line(const session_t *session, int line_index, ch
     
     /* Convert cells to UTF-8 text */
     return (ssize_t)screen_buffer_cells_to_utf8(session->screen, line, session->screen->cols, buffer, size);
+}
+
+char *session_get_scrollback_json(const session_t *session, int start_line, int count,
+                                  size_t max_bytes, int *out_count) {
+    if (out_count) *out_count = 0;
+    if (!session || !session->screen || count <= 0) return NULL;
+    
+    size_t line_cap = (size_t)session->screen->cols * CLUSTER_MAX_CPS * UTF8_MAX_BYTES + 1;
+    char *line = malloc(line_cap);
+    char *esc = malloc(line_cap * 6 + 1);
+    size_t cap = 4096;
+    char *out = malloc(cap);
+    if (!line || !esc || !out) {
+        free(line);
+        free(esc);
+        free(out);
+        return NULL;
+    }
+    
+    size_t pos = 0;
+    int done = 0;
+    for (int i = 0; i < count; i++) {
+        ssize_t len = session_get_scrollback_line(session, start_line + i, line, line_cap);
+        if (len < 0) break;
+        size_t elen = str_json_escape(esc, line_cap * 6 + 1, line);
+        
+        /* ,"<line>" - always at least one line, then stop at the byte budget */
+        if (done > 0 && pos + elen + 4 > max_bytes) break;
+        if (pos + elen + 4 > cap) {
+            while (pos + elen + 4 > cap) cap *= 2;
+            char *grown = realloc(out, cap);
+            if (!grown) {
+                free(line);
+                free(esc);
+                free(out);
+                if (out_count) *out_count = 0;
+                return NULL;
+            }
+            out = grown;
+        }
+        if (done > 0) out[pos++] = ',';
+        out[pos++] = '"';
+        memcpy(out + pos, esc, elen);
+        pos += elen;
+        out[pos++] = '"';
+        done++;
+    }
+    out[pos] = '\0';
+    free(line);
+    free(esc);
+    if (out_count) *out_count = done;
+    return out;
 }

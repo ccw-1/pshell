@@ -1041,46 +1041,31 @@ static void handle_get_scrollback(http_request_t *req, http_response_t *resp, vo
         count = scrollback_used - start_line;
     }
     
-    /* Build JSON response */
-    char response[8192];
-    int offset = snprintf(response, sizeof(response),
-                         "{\"scrollback_size\":%d,\"scrollback_used\":%d,\"start_line\":%d,\"count\":%d,\"lines\":[",
-                         scrollback_size, scrollback_used, start_line, count);
-    
-    for (int i = 0; i < count && offset < (int)sizeof(response) - 100; i++) {
-        char line_buffer[256];
-        ssize_t line_len = session_get_scrollback_line(session, start_line + i, line_buffer, sizeof(line_buffer));
-        
-        if (line_len < 0) break;
-        
-        if (i > 0) {
-            offset += snprintf(response + offset, sizeof(response) - offset, ",");
-        }
-        
-        offset += snprintf(response + offset, sizeof(response) - offset, "\"");
-        
-        /* Escape line for JSON */
-        for (ssize_t j = 0; j < line_len && offset < (int)sizeof(response) - 10; j++) {
-            switch (line_buffer[j]) {
-                case '\n': offset += snprintf(response + offset, sizeof(response) - offset, "\\n"); break;
-                case '\r': offset += snprintf(response + offset, sizeof(response) - offset, "\\r"); break;
-                case '\t': offset += snprintf(response + offset, sizeof(response) - offset, "\\t"); break;
-                case '"': offset += snprintf(response + offset, sizeof(response) - offset, "\\\""); break;
-                case '\\': offset += snprintf(response + offset, sizeof(response) - offset, "\\\\"); break;
-                default:
-                    if (line_buffer[j] >= 32) {
-                        response[offset++] = line_buffer[j];
-                    }
-                    break;
-            }
-        }
-        
-        offset += snprintf(response + offset, sizeof(response) - offset, "\"");
+    /* Build JSON response (heap, no per-line limit) */
+    int got = 0;
+    char *lines = session_get_scrollback_json(session, start_line, count,
+                                              SESSION_SCROLLBACK_MAX_BYTES, &got);
+    if (!lines) {
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Failed to read scrollback");
+        return;
     }
     
-    snprintf(response + offset, sizeof(response) - offset, "]}");
+    size_t cap = strlen(lines) + 256;
+    char *response = malloc(cap);
+    if (!response) {
+        free(lines);
+        free(session_id);
+        http_response_send_error(resp, HTTP_STATUS_INTERNAL_ERROR, "Out of memory");
+        return;
+    }
+    snprintf(response, cap,
+             "{\"scrollback_size\":%d,\"scrollback_used\":%d,\"start_line\":%d,\"count\":%d,\"lines\":[%s]}",
+             scrollback_size, scrollback_used, start_line, got, lines);
+    free(lines);
     
     http_response_send_json(resp, HTTP_STATUS_OK, response);
+    free(response);
     free(session_id);
 }
 

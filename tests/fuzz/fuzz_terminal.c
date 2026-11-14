@@ -35,7 +35,11 @@ int main(int argc, char **argv) {
               case 2: buf[len++] = (char)(rnd() % 256); break;
               case 3: { const char *u[] = {"\xc3\xa9","\xcc\x81","\xe6\x97\xa5","\xf0\x9f\x91\x8d","\xf0\x9f\x8f\xbd","\xe2\x80\x8d","\xef\xb8\x8f","\xf0\x9f\x91\xa8","\xe2\x9d\xa4","\xf0\x9f\x87\xa9","\xe1\x84\x92","\xe1\x85\xa1"}; const char *x=u[rnd()%12]; len = strlen(x); memcpy(buf,x,len);} break;
               case 4: buf[len++] = "\r\n\t\b\x07\x0b\x0c"[rnd()%7]; break;
-              default: {
+              default: if (rnd()%4==0) {
+                static const int pm[] = {1,7,9,25,47,1000,1002,1003,1004,1005,1006,1015,1047,1049,2004,3};
+                len += snprintf(buf+len, sizeof buf-len, "\x1b[?%d%s%d%c", pm[rnd()%16],
+                                rnd()%2 ? ";" : ":", pm[rnd()%16], rnd()%2 ? 'h' : 'l');
+              } else {
                 len += snprintf(buf+len, sizeof buf-len, "\x1b[");
                 if (rnd()%4==0) buf[len++]='?';
                 int np = rnd()%7;
@@ -49,6 +53,8 @@ int main(int argc, char **argv) {
             if (rnd() % 97 == 0) screen_buffer_resize(s, 1 + rnd()%30, 1 + rnd()%60);
             if (rnd() % 53 == 0) {
                 size_t l; char *o = screen_buffer_render_ansi(s, &l); free(o);
+                o = screen_buffer_render_main_ansi(s, &l); free(o);
+                char mb[128]; screen_buffer_modes_to_ansi(s, mb, sizeof mb);
                 size_t sz = screen_buffer_text_size(s); char *t = malloc(sz); screen_buffer_get_text(s, t, sz); free(t);
                 for (int u = 0; u < s->scrollback_used; u++) { char ln[8192]; screen_buffer_cells_to_utf8(s, screen_buffer_get_scrollback_line(s,u), s->cols, ln, sizeof ln); }
             }

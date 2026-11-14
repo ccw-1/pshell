@@ -154,6 +154,24 @@ max_sessions = 10
         ctl(sock, "send", sid, "clear; for i in $(seq 1 49); do printf '─%.0s' $(seq 1 190); echo; done\\n")
         out = wait_screen(sock, sid, "─" * 150)
         check("large UTF-8 screen is returned", "─" * 150 in out, out[:200])
+        # scrollback lines longer than 4096 bytes and responses over 8 KiB
+        rc, out = ctl(sock, "create", "--command", "bash --norc --noprofile",
+                      "--rows", "5", "--cols", "1000", "--scrollback", "100")
+        sid2 = out.strip().splitlines()[-1].strip() if out.strip() else ""
+        check("wide session created", len(sid2) >= 32, out)
+        ctl(sock, "send", sid2, "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do printf 'a\\xcc\\x81\\xcc\\x81\\xcc\\x81%.0s' $(seq 1 1000); echo; done; echo DO$((1+1))NE\\n")
+        wait_screen(sock, sid2, "DO2NE")
+        rc, out = ctl(sock, "scrollback", sid2, "--count", "20")
+        wide = [l for l in out.splitlines() if l.startswith("a\u0301\u0301\u0301" * 1000)]
+        check("scrollback line over 4096 bytes is complete", len(wide) >= 1, out[:200])
+        body = out.split("\n\n", 1)[1].rstrip("\n").split("\n") if "\n\n" in out else []
+        hdr = [l for l in out.splitlines() if l.startswith("Showing lines")]
+        shown = None
+        if hdr:
+            a, b = hdr[0].split()[2].rstrip(":").split("-")
+            shown = int(b) - int(a) + 1
+        check("count matches the lines returned", shown == len(body) and shown > 1,
+              f"shown={shown} body={len(body)}")
         check("daemon still alive", daemon.poll() is None)
     finally:
         daemon.terminate()
