@@ -4,6 +4,7 @@ A lightweight, portable C-based programmable shell daemon with virtual terminal 
 
 ## 📚 Key Documentation
 
+- **[User's Guide](docs/GUIDE.md)** ([PDF](docs/GUIDE.pdf)) - Installation, concepts, every command, REST API, MCP server, troubleshooting
 - **[Implementation Plan](IMPLEMENTATION_PLAN.md)** - Complete technical implementation plan with architecture, phases, and specifications
 - **[MCP Server](docs/MCP_SERVER.md)** - Model Context Protocol server for AI agents (auto-starts the daemon)
 - **[Wiki Home](wiki/index.md)** - Complete documentation index organized by audience
