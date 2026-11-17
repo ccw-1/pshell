@@ -2,7 +2,6 @@
 title: "pshell User's Guide"
 subtitle: "Portable Programmable Shell: terminal sessions you can script"
 author: "ccw-1"
-date: "Version 1.2.0 (November 2026)"
 ---
 
 # Introduction
@@ -100,12 +99,25 @@ You can also run everything from the source tree without installing: use
 
 ## Check the version
 
+Every program reports its version and, when built from a git checkout, the
+git state it was built from:
+
 ```sh
 pshell -v
+pshellctl -V
+pshell-client -V
+pshell-mcp -v
+```
+```
+pshell version 1.3.0 (v1.3.0)
 ```
 
-prints the version of the daemon. The MCP server reports the same version
-to its clients.
+A build between releases shows a description such as
+`v1.3.0-4-g1a2b3c4` (4 commits after the tag), with `-dirty` added when
+the working tree has uncommitted changes. Outside a git checkout (a
+tarball) it shows `unknown`. The version is also in the file `VERSION`,
+and `make version` prints it. The MCP server reports the same version to
+its clients.
 
 # Quick start
 
@@ -627,7 +639,7 @@ pshellctl generate-key
 ```
 ```
 Generated API Key (32 bytes, 44 characters):
-qr1TsdyaMkil4hrQpm9a0KxJJomgIhYrekIALUZHREA=
+EXAMPLEKEY-replace-with-your-own-0123456789=
 ```
 
 ```ini
@@ -638,7 +650,7 @@ port = 8080
 
 [auth]
 enabled = true
-api_keys = qr1TsdyaMkil4hrQpm9a0KxJJomgIhYrekIALUZHREA=
+api_keys = EXAMPLEKEY-replace-with-your-own-0123456789=
 ```
 
 Restart the daemon. Clients send the key as `X-API-Key: KEY` or as
@@ -672,7 +684,7 @@ Create accepts `command`, `rows`, `cols`, `scrollback_lines`,
 ## Examples
 
 ```sh
-KEY=qr1TsdyaMkil4hrQpm9a0KxJJomgIhYrekIALUZHREA=
+KEY=EXAMPLEKEY-replace-with-your-own-0123456789=
 U=http://127.0.0.1:8080/api
 
 curl -s -X POST $U/sessions -H "X-API-Key: $KEY" \

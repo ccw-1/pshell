@@ -1241,8 +1241,9 @@ int main(int argc, char **argv) {
                 autostart = false;
                 break;
             case 'v':
-                printf("pshell-mcp (pshell %s, MCP protocol %s)\n",
-                       PSHELL_VERSION_STRING, MCP_PROTOCOL_VERSION);
+                printf("pshell-mcp (pshell %s (%s), MCP protocol %s)\n",
+                       PSHELL_VERSION_STRING, PSHELL_BUILD_INFO,
+                       MCP_PROTOCOL_VERSION);
                 return 0;
             case 'h':
                 print_usage(argv[0]);

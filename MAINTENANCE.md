@@ -396,7 +396,7 @@ valgrind --leak-check=full --show-leak-kinds=all \
 ## Contact & Support
 
 - Project: pshell terminal session manager
-- Location: /home/knoppix/go-dev/pshell
+- Location: the pshell source directory
 - Documentation: README.md, EXPECT_BUFFER_IMPLEMENTATION.md
 - Issues: Check logs first, then review known issues
 

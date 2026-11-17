@@ -597,7 +597,7 @@ Status: healthy
 ## How to Resume Development
 
 ```bash
-cd /home/knoppix/go-dev/pshell
+cd pshell
 
 # Build
 make clean && make

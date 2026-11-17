@@ -218,7 +218,7 @@ static void print_usage(const char *prog) {
 
 /* Print version */
 static void print_version(void) {
-    printf("pshell version %s\n", PSHELL_VERSION_STRING);
+    printf("pshell version %s (%s)\n", PSHELL_VERSION_STRING, PSHELL_BUILD_INFO);
     printf("Portable Programmable Shell with REST API\n");
 }
 

@@ -1,5 +1,6 @@
 #include "pshell/http_client.h"
 #include "pshell/json_simple.h"
+#include "pshell/version.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,7 @@ static void print_usage(const char *prog) {
     printf("  -p, --port PORT      Server port (default: %d)\n", DEFAULT_PORT);
     printf("  -k, --api-key KEY    API key for authentication\n");
     printf("  --help               Show this help message\n");
+    printf("  -V, --version        Show version\n");
     printf("\n");
     printf("Commands:\n");
     printf("  create [OPTIONS]     Create new session\n");
@@ -510,12 +512,13 @@ int main(int argc, char **argv) {
         {"port", required_argument, 0, 'p'},
         {"api-key", required_argument, 0, 'k'},
         {"help", no_argument, 0, 'H'},
+        {"version", no_argument, 0, 'V'},
         {0, 0, 0, 0}
     };
 
     int opt;
     opterr = 0;  /* Disable error messages for unknown options (subcommand options) */
-    while ((opt = getopt_long(argc, argv, "+h:p:k:", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "+h:p:k:V", long_options, NULL)) != -1) {
         switch (opt) {
             case 'h':
                 g_host = optarg;
@@ -531,6 +534,9 @@ int main(int argc, char **argv) {
                 break;
             case 'H':
                 print_usage(argv[0]);
+                return 0;
+            case 'V':
+                printf("pshell-client %s (%s)\n", PSHELL_VERSION_STRING, PSHELL_BUILD_INFO);
                 return 0;
             default:
                 print_usage(argv[0]);

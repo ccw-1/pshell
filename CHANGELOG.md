@@ -5,11 +5,28 @@ All notable changes to pshell are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The current version is defined in [VERSION](VERSION) and `include/pshell/version.h`.
+The current version is defined in [VERSION](VERSION), the single source of truth; `make` generates the version header from it. Releases are made with `scripts/release.sh`.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-17
+
 ### Added
+
+- Version management: `VERSION` is the single source of truth. The Makefile generates `build/gen/pshell/version_gen.h` (version numbers and `git describe` build info) and rebuilds the programs that print it when it changes. `include/pshell/version.h` no longer holds a second copy of the number. New `make version` and `make check-version` (VERSION format and CHANGELOG entry), and `scripts/release.sh X.Y.Z` (checks, rebuilds, tests, rebuilds the guide PDF, commits `release: vX.Y.Z` and tags `vX.Y.Z`).
+- `pshellctl -V` and `pshell-client -V/--version`; `pshell -v` and `pshell-mcp -v` now include the git build info, e.g. `pshell version 1.3.0 (v1.3.0)`.
+- User's Guide: `docs/GUIDE.md` and `docs/GUIDE.pdf` (`make -C docs`). The PDF title page shows the version from `VERSION`.
+- MIT `LICENSE`.
+
+### Removed
+
+- Internal session and status notes from the repository root (`BUGFIX_STATUS.md`, `FIXES_APPLIED.md`, `INCOMING_ONLY_STATUS.md`, `INCOMING_ONLY_FINAL_STATUS.md`, `PSHELL_WORK_SUMMARY.md`, `SESSION_RESTART.md`, `SESSION_STATE.md`).
+
+### Security
+
+- `docs/SECURITY.md`: vulnerability reports go through GitHub private reporting (the placeholder e-mail address was removed).
+
+### Added (terminal, expect and attach features)
 
 - `[sessions] max_attach` setting (default 16, range 1-256, read at startup): maximum terminals attached to one session. Replaces the fixed limit of 4; the per-session attach table is now heap-allocated.
 - `pshellctl attach <session-id>`: interactive terminal on a session over the Unix socket (no HTTP). The `attach_session` socket method replies normally, then the connection becomes a raw byte stream owned by the session (client input to the PTY, PTY output to up to `[sessions] max_attach` (default 16) attached clients, screen redraw on attach). The session is resized to the attaching terminal (also on SIGWINCH); `Ctrl-]` detaches. Test: `tests/integration/test_attach.py`.
@@ -190,5 +207,6 @@ The current version is defined in [VERSION](VERSION) and `include/pshell/version
   (`pshell-client`), web interface, VT100 emulation, scrollback buffer
 - Security defaults: HTTP disabled, Unix socket enabled with 0600 permissions
 
-[Unreleased]: https://github.com/ccw-1/pshell/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ccw-1/pshell/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ccw-1/pshell/compare/v1.2.0...v1.3.0
 [1.0.0]: https://github.com/ccw-1/pshell/releases/tag/v1.0.0

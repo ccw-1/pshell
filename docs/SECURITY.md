@@ -132,6 +132,6 @@ Planned features to improve multi-user security:
 
 ## Reporting Security Issues
 
-If you discover a security vulnerability, please email: security@example.com
+If you discover a security vulnerability, please report it privately through GitHub (Security tab, "Report a vulnerability") at https://github.com/ccw-1/pshell/security/advisories/new.
 
 Do NOT open public GitHub issues for security vulnerabilities.

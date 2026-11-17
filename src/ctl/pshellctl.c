@@ -9,6 +9,7 @@
 #include "pshell/json_simple.h"
 #include "pshell/logger.h"
 #include "pshell/string_utils.h"
+#include "pshell/version.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,6 +85,7 @@ static void print_usage(const char *prog) {
     printf("  -s <path>    Socket path (default: %s)\n", DEFAULT_SOCKET_PATH);
     printf("               Can also be set via PSHELL_SOCKET_PATH environment variable\n");
     printf("               Priority: -s flag > PSHELL_SOCKET_PATH > default\n");
+    printf("  -V           Show version\n");
     printf("  -h           Show this help\n");
     printf("\n");
     printf("Commands:\n");
@@ -1473,13 +1475,16 @@ int main(int argc, char **argv) {
     }
     
     /* Parse options (command-line overrides environment variable) */
-    while ((opt = getopt(argc, argv, "s:h")) != -1) {
+    while ((opt = getopt(argc, argv, "s:hV")) != -1) {
         switch (opt) {
             case 's':
                 socket_path = optarg;
                 break;
             case 'h':
                 print_usage(argv[0]);
+                return 0;
+            case 'V':
+                printf("pshellctl %s (%s)\n", PSHELL_VERSION_STRING, PSHELL_BUILD_INFO);
                 return 0;
             default:
                 print_usage(argv[0]);

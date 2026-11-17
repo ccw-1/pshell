@@ -2,8 +2,20 @@
 #define PSHELL_VERSION_H
 
 /*
- * Single source of truth for the pshell version.
- * Mirrored in the VERSION file at the repository root.
+ * pshell version.
+ *
+ * The VERSION file at the repository root is the single source of truth.
+ * The Makefile generates pshell/version_gen.h from it (and from
+ * `git describe`), which defines:
+ *
+ *   PSHELL_VERSION_MAJOR / _MINOR / _PATCH   integers
+ *   PSHELL_VERSION_STRING                    "MAJOR.MINOR.PATCH"
+ *   PSHELL_BUILD_INFO                        git describe output, e.g.
+ *                                            "v1.3.0" or
+ *                                            "v1.3.0-4-g1a2b3c4-dirty",
+ *                                            "unknown" outside a git tree
+ *
+ * To release, use scripts/release.sh (do not edit the version by hand).
  *
  * Bump rules (semantic versioning):
  *   MAJOR - incompatible API or protocol changes
@@ -11,15 +23,7 @@
  *   PATCH - backward compatible bug fixes
  */
 
-#define PSHELL_VERSION_MAJOR 1
-#define PSHELL_VERSION_MINOR 2
-#define PSHELL_VERSION_PATCH 0
-
-#define PSHELL_VERSION_STRING "1.2.0"
-
-/* Convenience macros for embedding the version in strings */
-#define PSHELL_VERSION_STRINGIFY_(x) #x
-#define PSHELL_VERSION_STRINGIFY(x) PSHELL_VERSION_STRINGIFY_(x)
+#include "pshell/version_gen.h"
 
 #define PSHELL_VERSION_NUMERIC \
     ((PSHELL_VERSION_MAJOR * 10000) + \
