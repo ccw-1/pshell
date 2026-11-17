@@ -704,7 +704,7 @@ Contributions are welcome: open an issue or pull request at https://github.com/c
 
 ## License
 
-License: TBD (no license file is present yet).
+MIT License, see [LICENSE](LICENSE).
 
 ## Support
 
